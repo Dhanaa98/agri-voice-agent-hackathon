@@ -1,0 +1,17 @@
+# Slim requirements for deploying the farmer-facing web dashboard
+# (agri_voice_agent.farmer_server) to a cloud host.
+#
+# Deliberately excludes onnxruntime and sounddevice from requirements.txt --
+# those are only needed by the wakeword/microphone voice pipeline
+# (main.py, dashboard_server.py, wakeword/router.py, audio_input.py), none
+# of which farmer_server.py imports. sounddevice in particular can fail to
+# build on a headless container without system PortAudio libs, so leaving
+# it out avoids a deploy-time build failure for a dependency this service
+# never actually uses.
+assemblyai>=0.35.0
+google-genai>=0.3.0
+requests>=2.32.0
+python-dotenv>=1.0.1
+pydantic>=2.8.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0

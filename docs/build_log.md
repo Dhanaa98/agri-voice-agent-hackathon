@@ -1,0 +1,1041 @@
+# Build Log
+
+Running log of build progress for this project at
+`D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
+
+## Setup decisions made
+- **Wakewords collapsed from three to two: "Hey Field" (Weather+Crop) + "Hey
+  Plant" (2026-09-17).** Continuing the earlier "should we merge wakewords"
+  discussion (see the wakeword-phrase-review entry below, where the user
+  originally chose to keep 3) -- revisited after the farmer dashboard's
+  single-chat auto-routing worked well and the user asked directly "how
+  about using a single wakeword for both crop and weather". Explicitly
+  scoped this to Weather+Crop only, keeping Plant separate: those two are
+  both single-shot informational questions with no natural pre-commitment
+  to which specialist before speaking (unlike Plant, which needs a symptom
+  description and runs multi-turn). Discussed wakeword-phrase options
+  (Hey Field / Hey Harvest / Hey Almanac / Hey Farm) before building --
+  **user chose "Hey Field"** (natural, 2 syllables, acoustically distinct
+  from "Hey Plant"'s hard stop, unlike the previously-flagged-weak "Hey
+  Crop").
+  Implementation: `wakeword/router.py`'s `DOMAINS` shrank from
+  `("weather","crop","plant")` to `("field","plant")` -- model files are
+  now `field.onnx` + `plant.onnx` (down from three). "field" is a WAKEWORD
+  name only, there is no FieldAgent -- `main.py`'s `_on_final_transcript()`
+  resolves "field" to "weather" or "crop" via a NEW `resolve_field_domain()`
+  in `intent.py`, reusing the exact same deterministic keyword-matching
+  (`detect_domain()`) the farmer dashboard's single-chat routing already
+  uses -- same "never an LLM call for routing decisions" principle applied
+  consistently across both frontends now. `resolve_field_domain()` defaults
+  to "weather" (not None) when wording is ambiguous, since unlike the
+  dashboard's redirect-suggestion use case, "Hey Field" has already
+  committed to answering with ONE of the two domains the moment it fired --
+  a non-answer isn't an option. `intent.py`'s docstring updated to drop the
+  old "the voice pipeline never needs this" framing, which is no longer
+  true.
+  Verified live (not just code review): `resolve_field_domain()` tested
+  directly against 5 phrasings (weather/crop keywords + one ambiguous
+  "how's it going out there" correctly defaulting to weather); a full
+  `VoiceAgentLoop(forced_domain="field")._on_final_transcript(...)` call
+  confirmed `active_domain` correctly rewrites from "field" to "crop" (and
+  separately "weather") once a real transcript arrives, with the full
+  response pipeline (deterministic scoring -> Gemini phrasing) producing a
+  correct real answer both times; confirmed `forced_domain="plant"` is
+  completely untouched by this change. `test_weather_manual` and
+  `test_crop_manual` re-run clean (they call agents directly, unaffected by
+  routing). README updated throughout (wakeword list, file tree comments,
+  `.onnx` filename references, "three wakewords" -> "two wakewords"
+  language in the technical dashboard section).
+  **Not yet done:** no `.onnx` models exist for either wakeword (user
+  trains/provides these themselves, per the earlier standing note) --
+  `field.onnx` specifically doesn't exist yet under a name that didn't
+  exist before this session, so this is fully new to the user's training
+  queue, not a rename of an existing trained model.
+- **Farmer dashboard: multi-farm support, single-chat auto-routing, full
+  visual redesign, and several real bugs found via live testing
+  (2026-09-16).** Large session covering several linked requests. See
+  `docs/artifacts.md` for the two published artifacts referenced below and
+  their republish status.
+  **1. Multi-farm data model.** User: "a farmer can have multiple farms...
+  anytime a farmer uses this model, it should ask them something relevant
+  for the location... if they have previously put a location of the farm,
+  that should be already captured without asking again. if a user has
+  multiple farms in different regions, it should ask to confirm which farm
+  it is talking about." Asked clarifying questions first (farm identity =
+  farmer-named, not location-as-identity; ask only when ambiguous, not
+  every time; Plant diagnosis stays location-independent) rather than
+  guessing the design. `farm_state.py` restructured: `FarmProfile`
+  (location/weather/crops/symptoms -- what used to be all of `FarmState`)
+  + `FarmState` now holds `farms: list[FarmProfile]` and
+  `active_farm_index`. All three domain agents (`weather.py`, `crop.py`,
+  `plant.py`) now take a `FarmProfile` directly, not the old flat
+  `FarmState` -- simplified their signatures since they only ever used
+  farm-scoped fields anyway. `farmer_server.py`'s `resolve_active_farm()`
+  implements the rule set: 0 farms + no location = ephemeral scratch
+  profile (crop suitability still works anonymously); 0 farms + location
+  given = auto-saved as "Farm 1"; 1 farm = used silently; 2+ farms with no
+  active selection = returns `ambiguous_farms` and skips calling any agent
+  until the farmer picks one (via `farm_name` in the next request). New
+  endpoints `GET /farms`, `POST /farms`, `POST /farms/{index}/select`.
+  Scoped to farmer_server.py only (not the technical dashboard's wakeword
+  pipeline) per explicit user choice -- `main.py`/`dashboard_server.py`
+  just auto-create/use a single "Farm 1" now so they still compile against
+  the new shared state shape, sharing the same `farm_state.json` file.
+  **Real bug caught mid-implementation:** a multi-turn Plant conversation
+  starting before any farm existed would silently lose its symptom report
+  on the final turn, because each call to `resolve_active_farm()` was
+  constructing a NEW throwaway `FarmProfile` for the "no farms yet" case --
+  `PlantSession.set_farm()` caches a reference on turn 1, but
+  `farm.add_symptom_report()` on the final turn was writing onto a
+  different, discarded object. Fixed with a single reused module-level
+  `_scratch_farm` instead of constructing fresh each call.
+  **2. Cross-domain redirect + location-confirmation bugs (predates the
+  multi-farm work, same session).** User reported via screenshot: weather
+  always answered from a hardcoded default location without ever asking,
+  and asking a crop question while the Weather button was active silently
+  returned another weather answer. Root causes: (a) no cross-domain intent
+  checking existed at all in `farmer_server.py` -- built `intent.py`
+  (deterministic keyword matching, same philosophy as `plant.py`'s
+  `match_symptom_category()`, never an LLM call) and wired
+  `suggest_redirect()` into the message endpoint, gated to only fire on a
+  FRESH exchange (never mid-Plant-diagnosis, so a follow-up answer like
+  "the whole plant, not just one branch" is never misrouted); (b) even
+  after adding location support, the fallback-to-`config.DEFAULT_LOCATION`
+  path was itself getting written into `farm_state.location` and then
+  treated as "known" on every subsequent call -- added a
+  `location_confirmed` flag that only `WeatherAgent.handle()` sets True
+  when an EXPLICIT location was given, never for the default fallback.
+  **3. Two real infra bugs found via live testing, unrelated to the above
+  but caught while testing it.** `llm_client.py`'s default model
+  `gemini-flash-latest` was taking 23-80 seconds per call (confirmed via
+  Google's own `Server-Timing` response header showing 80s server-side,
+  not a client/network issue) -- switched default to
+  `gemini-flash-lite-latest`, which answered the same prompts in ~2.4s.
+  This also explains an intermittent raw `WinError 10053` (connection
+  aborted) that was leaking into farmer-facing chat bubbles -- added an
+  `except OSError` catch in `llm_client.generate()` alongside the existing
+  `errors.APIError` catch, so any transport-level failure also degrades to
+  the deterministic-text fallback instead of surfacing a raw error.
+  Separately, `CropAgent.handle()` with no crop named was feeding ALL 45
+  crops' assessments to the LLM for phrasing every time (part of what made
+  the above latency bug so painful) -- narrowed to the best 5 matches (or
+  fewest-problems 5 if none are suitable) before the LLM call, which also
+  made the reply itself more useful, not just faster.
+  **4. Location modal.** After the inline "tell me your location" banner
+  proved too easy to miss (user kept not noticing it), replaced it with a
+  proper blocking modal dialog (input + "Detect automatically" [GPS via
+  `navigator.geolocation` -> reverse-geocode via a new
+  `WeatherAgent.reverse_geocode()`, falling back to IP-based geolocation
+  via `ip-api.com`'s free HTTP-only endpoint if GPS is denied/unavailable]
+  + "Skip for now"). **Real bug found and fixed:** the modal never
+  actually hid -- `.modal-overlay { display: flex }` in CSS silently
+  overrode the browser's native `[hidden]` behavior, so toggling the
+  `hidden` property in JS did nothing visually. This looked exactly like a
+  caching problem (survived hard-refresh AND incognito) until traced to
+  the CSS rule itself; fixed with an explicit `.modal-overlay[hidden] {
+  display: none }` rule. **Lesson:** when an element's `hidden` attribute
+  seems to not work and cache-busting doesn't help, check whether the
+  element's own class sets `display` unconditionally in CSS -- author
+  styles silently beat the UA `[hidden]` default.
+  **5. Full visual redesign to a "professional, modern, clean dashboard"
+  (user's explicit ask).** Rebuilt `static/farmer.html` from a single
+  centered mobile-style column into a real two-column dashboard shell: a
+  dark-green sidebar (brand mark, domain status list, farms list with an
+  inline add-farm panel) + a main content area (conditions strip as stat
+  tiles, a proper chat panel with header). New type pairing: Manrope
+  (headings/UI) + Inter (body/data), full light/dark theme token system.
+  All existing functionality (redirect notices, farm disambiguation
+  picker, location nudge) preserved, only markup/CSS restructured -- same
+  element IDs so the JS logic needed minimal changes at that stage.
+  **6. Single-chat auto-routing (this session's last major change).** User
+  observed (with a live screenshot) that a farmer typing naturally forgets
+  to click the right button when their topic shifts mid-conversation --
+  "do you think we have rain next week" while Plant Health was still
+  active got misrouted. Asked whether the WHOLE project (including the
+  3-wakeword voice pipeline) should collapse to one entry point, or just
+  the farmer dashboard's typed/chat UI -- **user chose farmer-dashboard-
+  only**, explicitly keeping the technical dashboard's three separate "Hey
+  Weather/Hey Crop/Hey Plant" wakewords untouched since that's the
+  hackathon brief's core demo claim. Replaced the three manual
+  Weather/Crop/Plant buttons (which required clicking before every topic
+  change) with a single chat: `POST /message/{domain}` became `POST
+  /chat` (no domain in the URL) and `WS /voice/{domain}` became `WS
+  /voice`. New `route_message(text)` in `farmer_server.py`: mid-Plant-
+  diagnosis stays locked on Plant (same guard as the redirect feature
+  before it), otherwise `intent.py`'s `detect_domain()` picks the agent,
+  falling back to whatever was previously active (not a hardcoded
+  default) when the wording doesn't clearly match anything -- so "ok
+  thanks" or a vague follow-up doesn't get misrouted to an arbitrary
+  domain. The sidebar's three domain rows are now a passive "currently
+  active" indicator, not click targets; each reply that actually changed
+  domain shows a small "↪ Switched to X" note. Also fixed a real keyword
+  gap surfaced by the exact screenshot that prompted this whole
+  discussion: "withered"/"withering" weren't in `intent.py`'s plant
+  keyword list (only "wilting"/"wilt" were), so that exact message had
+  been silently staying on Weather.
+  Verified live end-to-end after each change (not just code-reviewed):
+  full 3-turn wilt Plant conversation confirmed to stay on Plant through
+  both follow-ups then correctly release and route a subsequent weather
+  question afterward; multi-farm disambiguation prompt + resolution via
+  `farm_name` confirmed live via curl against the running server (not just
+  TestClient); `needs_location` confirmed to persist correctly across
+  turns until a real location is given; Gemini latency fix confirmed via
+  direct timing (23-80s -> ~2.4s) and a raw `Server-Timing` header read
+  from Google's own response, not assumed.
+  **User also changed the default landing domain from Weather to Crop**
+  (`setActiveDomain("crop")` on load) -- simple preference, no other logic
+  tied to it.
+- **First real live testing session with actual API keys -- found and fixed
+  two genuine bugs.** User started testing the new farmer dashboard live and
+  reported the conversation output "not looking like a conversation" (too
+  much raw detail). Root cause: `GEMINI_API_KEY` wasn't set yet at that
+  point, so every agent was on its documented deterministic-text fallback
+  path -- correct behavior, just not what a farmer should see as the normal
+  experience. User got a free Gemini key (aistudio.google.com) and added it
+  to `.env`, which is now set alongside `OPENWEATHER_API_KEY` (also
+  confirmed working with real live geocode/weather data during this
+  session -- first genuine confirmation that key works, via a London,GB
+  test query returning real London weather).
+  **Bug 1 (real, found via live testing, not by inspection):**
+  `llm_client.py`'s hardcoded default model `"gemini-2.0-flash"` no longer
+  exists -- Google retired it. Confirmed via `client.models.list()` against
+  the user's real key rather than guessing a replacement; found
+  `gemini-flash-latest` (an alias, not a pinned version) actually works via
+  a live test call. Changed the default to that alias specifically so this
+  doesn't silently break again next time Google rotates which model
+  "-latest" points to.
+  **Bug 2 (also real, found via live testing):** Gemini's API is
+  intermittently returning 503 "high demand" errors right now (observed
+  multiple times live during this session, not hypothetical). `llm_client
+  .generate()` only let `google.genai.errors.APIError` propagate raw --
+  every call site (`plant.py` x2, `crop.py` x1) only catches `RuntimeError`
+  (the documented "no key configured" signal), so a transient Gemini outage
+  was surfacing as a raw stack-trace-shaped error string directly in a
+  farmer's chat bubble instead of falling back to the same deterministic
+  text used for the no-key case. Fixed at the source in `llm_client.py`:
+  catch `errors.APIError` (covers both `ServerError`/`ClientError`
+  subclasses) and re-raise as `RuntimeError` -- every existing call site's
+  fallback handling then just works unmodified, no need to touch 3 files
+  individually. Verified two ways: (1) a synthetic monkeypatch test forcing
+  a simulated `ServerError(503)` through `llm_client.generate()` and
+  confirming it surfaces as `RuntimeError` as designed; (2) organically
+  witnessed it trigger for real during `test_plant_manual`/
+  `test_cross_domain_integration` reruns, where Gemini's actual intermittent
+  503s caused genuine fallback-to-deterministic-text output -- both test
+  suites still passed (their assertions check structured data, not
+  phrasing, so unaffected either way), and manual server testing confirmed
+  no raw error text ever reached a response.
+  **Also fixed: location was never actually farmer-controllable.**
+  `WeatherAgent.handle()` already had a `location` parameter and fallback
+  chain (explicit -> farm_state.location -> config.DEFAULT_LOCATION), but
+  nothing in `farmer_server.py`/`farmer.html` ever passed a location
+  through -- every weather query silently used the `.env` default
+  regardless of where the actual farm was. Added a `location` field to
+  `MessageIn`, wired it into the weather branch of `POST /message/{domain}`,
+  and added a location input row to `farmer.html` (shown only when Weather
+  is the active domain, remembered via localStorage across visits). Also
+  wired `CropAgent.handle()`'s existing-but-unused `crop_name` parameter
+  through the same way while touching this code. Verified live: a location
+  of "London,GB" sent via the API correctly returned real London weather
+  (12.38C, clear sky) instead of the Colombo default, and confirmed the
+  farm_state persisted that location so a follow-up query without an
+  explicit location reused it correctly.
+  **Process note:** hit real confusion mid-debugging from stale background
+  server processes on Windows -- `pkill` via git-bash did not actually kill
+  the uvicorn/python process (likely a process-tree mismatch between bash
+  job control and the real Windows process), so a "restarted" server was
+  actually still the old one, and a code fix appeared not to take effect.
+  Diagnosed by checking the actual port-bind error in the log ("only one
+  usage of each socket address... normally permitted") rather than assuming
+  the fix was wrong, then killed processes properly via PowerShell's
+  `Get-Process python | Stop-Process -Force` instead of bash `pkill` for
+  the rest of this session. If restarting a Python server on this Windows
+  environment and a fix "doesn't seem to work," check for a stale process
+  holding the port before doubting the code change.
+- **Second, farmer-facing dashboard built** (`farmer_server.py` +
+  `static/farmer.html`), separate from the existing technical/judge-facing
+  one (`dashboard_server.py` + `static/index.html`). User asked for
+  something interactive where a farmer clicks to manually activate each
+  agent, rather than only voice-triggered. Confirmed this needed a genuinely
+  new interaction model -- the existing `VoiceAgentLoop` assumes a
+  continuous mic stream driving wakeword detection, which doesn't fit a
+  click-driven flow -- so built a separate, purpose-built server rather than
+  bolting click-support onto the wakeword loop. User explicitly chose "mic
+  when available, typed as fallback" (one dashboard, not two separate
+  modes) when asked, then chose "build typed path fully now, stub mic path"
+  when the mic path turned out to need real new infrastructure (browser
+  audio capture streamed to a new WebSocket endpoint, not just wiring
+  existing code) given no `ASSEMBLYAI_API_KEY` exists in this dev
+  environment yet to verify it against.
+  `farmer_server.py`: reuses the exact same `WeatherAgent`/`CropAgent`/
+  `PlantAgent` classes and `FarmState` load/save path as `main.py`/
+  `dashboard_server.py` -- NOT a reimplementation, genuinely the same
+  domain logic, just triggered by HTTP instead of wakeword+mic. Three
+  endpoints: `GET /capabilities` (tells the frontend what's actually usable
+  -- mic_available, phrasing_available, domains_available -- so the UI never
+  offers a control that would just fail, matching this project's
+  fail-gracefully convention), `POST /message/{domain}` (typed text -> that
+  domain's `agent.handle()` -> response + updated farm_state, mirrors
+  `main.py`'s `MULTI_TURN_DOMAINS`/`_domain_conversation_done` logic for
+  Plant's multi-turn follow-ups), `WS /voice/{domain}` (browser mic audio ->
+  `StreamingASR` -> same handling as typed -- built to the real `asr.py`
+  contract but explicitly documented in the module docstring and README as
+  UNVERIFIED end-to-end, construction-only, needs a real API key to actually
+  test).
+  `static/farmer.html`: deliberately different visual language from the
+  technical dashboard (warm/light vs dark, Nunito+Inter vs the field-
+  notebook serif+mono pairing used elsewhere in this project, chat-bubble
+  conversation instead of a raw event log) since it's built for a different
+  reader -- plain language, large tap targets, a farm-state summary in
+  everyday terms (temperature/humidity/crops-grown chips) instead of raw
+  JSON-shaped stats. Opens in a real working state (fetches `/capabilities`
+  and `/farm_state` on load, disables agent buttons the backend actually
+  reports as unavailable) rather than a static mockup.
+  Verified live, not just code-reviewed: started the actual server process,
+  confirmed `GET /` and `GET /capabilities` respond correctly (mic_available
+  false, matching the absent AssemblyAI key; weather/crop/plant all
+  available), then did a REAL POST round-trip to `/message/plant` against
+  the running server (not just a test client) and got a correct follow-up
+  question back. Also exercised the full 3-turn Plant conversation through
+  `TestClient` to confirm `done: false/false/true` progression and the final
+  diagnosis text match the exact same logic verified elsewhere in this
+  project via `PlantAgent` directly -- this is the same domain logic, wired
+  differently, not new logic to re-validate from scratch.
+  Noted along the way: `OPENWEATHER_API_KEY` is now set in this project's
+  `.env` (user must have added it) -- Weather is live-capable now, though
+  this wasn't specifically re-tested against the real API in this session
+  since the task was the farmer dashboard, not a Weather live-test pass.
+- **Pathogen Ledger artifact published** (browsable UI over the live
+  `plant_data.py` dataset): https://claude.ai/artifact/Vco1gE3bRop8jdGKCS7ELS
+  -- crop rail + disease cards + global search across name/pathogen/symptom
+  text, region-tagged control entries visually distinguished from universal
+  ones, weather-trigger thresholds shown per disease. Data is exported from
+  `plant_data.py` via a one-off Python script and embedded inline as JSON in
+  the page (not fetched live) -- **remember to re-export and republish to
+  the same URL after any future plant_data.py change**, the page will go
+  stale otherwise. Republish pattern: regenerate
+  `scratchpad/pathogen_data.json`, do a targeted string-replace of the
+  `const DATA = ...;` blob in `scratchpad/pathogen_browser.html`, verify
+  crop/disease counts parse correctly before publishing, then Artifact
+  publish with the same `url` (not a fresh file_path) to update in place
+  rather than create a duplicate.
+- **Targeted gap-fill pass (sixth extraction): banana, fire blight, citrus
+  canker, verified.** User asked to look for more data specifically to fill
+  gaps in the reference doc -- rather than searching broadly, used the
+  reference doc's OWN "no expanded write-up" / "named... without expanded
+  write-up" flags (grepped for that phrasing) to find precise, already-
+  identified gaps instead of guessing. Found banana was the standout: it
+  had a `crop_data.py` CropProfile (crop-suitability worked) but ZERO
+  `plant_data.py` entries (disease diagnosis didn't exist at all for it) --
+  the single highest-value gap in the whole project at this point. Also
+  targeted fire blight (apple) and citrus canker (citrus), both reduced to
+  bare name-mentions despite being extremely well-documented, widely-known
+  diseases.
+  Found and vetted 3 sources before delegating: National Horticulture Board
+  India banana PDF (verified real via `pypdf` after WebFetch initially
+  failed on it -- same recurring lesson, trust pypdf over WebFetch for
+  PDFs), Ohio State University CFAES fire blight fact sheet, California
+  Dept. of Food & Agriculture citrus canker pest profile. Deliberately did
+  NOT use citrus tristeza virus despite investigating it -- its official
+  UF/IFAS page turned out to be a thin cross-reference/link page with no
+  real symptom detail, so left out rather than forced in.
+  Delegated to a background agent with explicit before/after count checks
+  built into the verification steps. **Independently verified, and caught
+  one real discrepancy in my own first check:** ran a live PlantAgent
+  banana test myself using "yellowing and hanging around the stem" and got
+  matched to the `yellowing` category (no banana diseases there), not the
+  `wilt` category the agent's report described -- initially looked like a
+  possible false claim. Re-ran with the agent's EXACT reported wording
+  ("wilting and hanging around the stem") and got the expected result:
+  `wilt` category, Panama Wilt and Bacterial Wilt/Moko Disease both
+  surfaced with full real content. Conclusion: the agent's report was
+  accurate, my first test simply used different symptom wording than it
+  did (keyword-based matching is sensitive to exact phrasing) -- not an
+  agent error, but a reminder that "spot-check the same scenario" is more
+  reliable than "spot-check a similar scenario" when verifying claims.
+  All other checks (py_compile clean; banana 0->4, apple 1->2, citrus 1->2
+  confirmed via `get_named_diseases()`; 0 invalid symptom_category / missing
+  region_label across the full 169-disease set; fire blight's
+  `min_temp_c=18.3` confirmed as a real unit conversion of the source's
+  "above 65F", not an invented number; manual test byte-identical/exit 0)
+  matched the agent's report exactly.
+  New totals: `plant_data.py` 43->44 crops, 163->169 diseases; reference doc
+  ~223+ -> ~236+ diseases.
+- **Full 43-crop expansion of the LIVE voice agent (not just the reference
+  doc), verified + reconciled.** User clarified a real gap: the reference doc
+  (43 crops) was purely a static citation archive that the running agent
+  NEVER reads at runtime -- `plant_data.py` (the actual code path) only had
+  5 crops. User's words: "i think the voice agent should answer anything
+  from every disease data it has" -- then, when asked whether to also expand
+  `crop_data.py` (the separate Crop-suitability advisor, which needs
+  DIFFERENT data -- growing-condition ranges, not disease data, and none of
+  that exists in the reference doc at all), explicitly said "both -- do the
+  full expansion now".
+  Ran TWO background agents in parallel, deliberately scoped to separate
+  files to avoid collision: one converting `plant_pathology_reference.md`'s
+  ~38 remaining crop sections into `plant_data.py`'s structured
+  NamedDisease/RegionalControl/WeatherTrigger format (comprehensive
+  promotion this time, NOT hand-picked curation -- explicitly the opposite
+  philosophy from the original 5 crops, per the brief's original "small
+  curated set" instruction which only applied to that initial demo scope);
+  the other doing fresh RESEARCH (WebSearch/WebFetch, since this data
+  doesn't exist anywhere in the project yet) to build CropProfile entries
+  (temp/humidity/rainfall ranges) for the same ~38 crops in `crop_data.py`.
+  **Independently verified both, then found and fixed a real cross-file bug
+  the two parallel agents' independent (individually reasonable) naming
+  choices created:** `crop_data.py` used specific representative crop names
+  (`cabbage`, `cucumber`, `coconut`, plus kept `banana`/`greengram` as their
+  own entries) while `plant_data.py` used the reference doc's own group-
+  section names (`crucifers`, `cucurbits`, `palms`) and merged greengram
+  into `blackgram`. Caught this myself by diffing `set(CROPS.keys())` vs
+  `set(NAMED_DISEASES.keys())` after both agents reported done -- neither
+  agent could have caught it alone since each only saw its own file. Fixed
+  by adding a `_CROP_ALIASES` dict in `plant_data.py` (cabbage/cauliflower/
+  turnip/radish/mustard -> crucifers; cucumber/melon/gourd -> cucurbits;
+  coconut/areca/toddy palm -> palms; greengram/green gram/mung/mung
+  bean/urad -> blackgram) consulted inside `get_named_diseases()` -- verified
+  live that e.g. `get_named_diseases("cabbage")` now returns the same 3
+  entries as `get_named_diseases("crucifers")`. Also found and fixed a
+  related smaller issue: `plant.py`'s "I couldn't match that symptom"
+  fallback message still listed only `crop_data.py`'s original 5 crop names
+  (misleading now that disease coverage spans 43 crops) -- removed that
+  crop-list mention from the message entirely (the symptom-matching
+  framework is crop-agnostic anyway, so naming specific crops there was
+  never quite right) and removed the now-unused `CROPS` import from
+  `plant.py`.
+  banana genuinely has no live disease data (the promotion agent correctly
+  skipped it -- the reference doc's own banana section has only a name-only
+  post-harvest table and an unexpanded virus mention, no real symptom/
+  control detail to convert) even though `crop_data.py` DOES have a banana
+  CropProfile -- this is an honest content gap, not a naming bug, left as-is
+  since inventing disease facts to fill it would violate the project's core
+  reliability principle.
+  Verified end-to-end after all fixes: `plant_data.py` py_compile clean,
+  43 crops / 163 diseases, original 5 crops' 23 entries confirmed byte-
+  identical (programmatic field comparison, not just "trust the report");
+  `crop_data.py` py_compile clean, 45 crops, original 5 confirmed byte-
+  identical; all `symptom_category`/`RegionalControl.region_label`
+  validations clean (0 violations) across all 163 diseases; alias
+  resolution live-tested (cabbage/cauliflower/cucumber/coconut/greengram/
+  green gram all correctly resolve to their group's disease list); ran a
+  full new live conversation through the real PlantAgent for a brand-new
+  crop (soybean, "purple spots" symptom) and confirmed it correctly matched
+  BOTH Frogeye Leaf Spot and Cercospora Blight with full differential detail
+  -- not just that data exists in the dict, but that the actual conversation
+  flow surfaces it correctly. test_plant_manual, test_crop_manual, and
+  test_cross_domain_integration all re-run personally, all exit 0, tomato's
+  output byte-identical throughout (confirming zero regression to the
+  original 5-crop demo path this whole project was built to showcase).
+  **Lesson for future parallel-agent work on this project:** when splitting
+  a task across two agents that will produce cross-referencing data (e.g.
+  two files that both need to agree on a shared key/name space), either (a)
+  give both agents the exact same explicit naming list up front rather than
+  letting each choose independently, or (b) always run a post-merge
+  diff/reconciliation check like the CROPS.keys() vs NAMED_DISEASES.keys()
+  comparison done here -- don't just verify each file in isolation.
+- **Fifth extraction pass: broadened reference doc beyond the 5 project crops
+  (web-sourced), verified.** User said "go beyond these [5 project crops]"
+  after the web-sourced US-extension pass -- explicit instruction to widen
+  `plant_pathology_reference.md`'s general coverage, matching their earlier
+  "I want everything" intent. Checked the doc's existing ~40 crop sections
+  first to find real gaps rather than guessing: soybean, lettuce, strawberry,
+  and carrot were entirely absent despite being major world crops. Searched
+  and vetted 4 new university-extension sources (UT Extension soybean field
+  guide, UC ANR lettuce slide deck by Tom Turini, Cornell strawberry leaf
+  disease article by Cathy Heidenreich, UW-Madison carrot leaf blight page)
+  -- confirmed each had genuine extractable disease/symptom/control content
+  via direct `pypdf` extraction (or direct HTML fetch for the carrot page)
+  BEFORE delegating, catching along the way that WebFetch's own PDF
+  summarizer unreliably garbled at least 2 of these otherwise-perfectly-
+  readable PDFs (called this out explicitly in the agent brief: trust
+  `pypdf.PdfReader` directly over any prior WebFetch summary).
+  Delegated to a background agent explicitly scoped to
+  `plant_pathology_reference.md` ONLY -- told it plainly not to touch
+  `plant_data.py` since none of these 4 crops are among the 5 the voice
+  agent actually supports (tomato/chili/rice/okra/onion).
+  **Independently verified:** project root intact; `plant_data.py`'s file
+  mtime (22:28) confirmed to predate the reference-doc agent's completion
+  (22:42) -- not touched, and it still compiles fine regardless. Grepped the
+  4 new `## CropName` headers directly (Soybean/Lettuce/Strawberry/Carrot,
+  all placed right after Onion as instructed) and counted their `###`
+  disease subsections myself rather than trust the reported numbers: Soybean
+  13 subsections (11 diseases + a correctly-flagged non-disease fungicide-
+  phytotoxicity disorder, "Tebuconazole Phytotoxicity," included by the
+  agent because the SOURCE ITSELF presents it as a diagnostic look-alike --
+  an honest, well-reasoned inclusion, not padding), Lettuce 8 diseases,
+  Strawberry 5 diseases + 1 shared management note, Carrot 2 diseases with
+  the VDIFN forecasting-model methodology correctly preserved as its own
+  subsection rather than flattened into generic advice, exactly as briefed.
+  Spot-read the Soybean section in full: genuinely rich differential-
+  diagnosis content (e.g. distinguishing soybean rust from bacterial
+  pustule via a 30x hand lens -- circular spore-bearing openings vs.
+  irregular cracks; anthracnose vs. pod/stem blight via fruiting-body
+  arrangement) -- not generic filler. Sources table rows 12-15 confirmed
+  present with real URLs, full author/institution/publication citations,
+  and the established "web-sourced, not user-supplied" provenance note
+  extended to cover this fifth pass too.
+  New totals: reference doc ~223+ diseases across 43 crops (up from ~197+/
+  39); `plant_data.py` unchanged at 23 diseases across the 5 project crops
+  (this pass was reference-doc-only by design).
+- **First web-sourced (not user-supplied) disease data pass, verified.** User
+  asked to "find good data" for more plant/disease coverage rather than
+  supplying documents directly -- first project session to use WebSearch/
+  WebFetch for this purpose. Searched for reputable US university extension
+  sources specifically targeting the thinnest project crops (chili had only
+  2 named diseases, okra 2, rice 4 -- vs tomato/onion's 3 each). Found and
+  vetted two: NMSU Circular 549 "Chile Pepper Diseases" (Lujan & Goldberg,
+  32pp, downloaded and confirmed text-readable, 59K chars) and the Texas
+  A&M Plant Disease Handbook (plantdiseasehandbook.tamu.edu, live HTML
+  pages covering all 5 project crops in one structured reference) --
+  verified real disease/symptom/control content via WebFetch before
+  committing to either, same "check before delegating" discipline as PDF
+  page-count/text-extractability checks in prior passes.
+  Delegated the merge to a background agent with the same established
+  pattern, but with an extra explicit instruction this time: where a new
+  US source overlaps a disease that already has India-sourced (TNAU) control
+  text in `plant_data.py`, ADD the US content as a new
+  `RegionalControl(country_codes=["US"], region_label=...)` entry alongside
+  the existing one -- never overwrite -- exercising the region-aware control
+  system (built in response to the user's "region matters for remedy"
+  request) for the first time with a genuine second-country source.
+  **Independently verified, not trusted at face value:** `plant_data.py`
+  disease counts re-checked programmatically and matched the agent's report
+  exactly (14 -> 23 total: tomato 3, chili 2->6, rice 4->8, okra 2->3, onion
+  3 unchanged); every `symptom_category` and every `RegionalControl.region_label`
+  presence checked programmatically against real code, both clean; most
+  importantly, PULLED UP THE ACTUAL rice "Brown spot" entry and confirmed
+  with my own eyes that the original universal RegionalControl AND the
+  TNAU-tagged one I hand-wrote earlier were both still present, completely
+  unmodified, with the new TAMU entry added as a third -- the
+  no-overwrite claim isn't just asserted, it's directly confirmed on the
+  entry most likely to reveal a mistake. Spot-checked one brand-new entry
+  (chili "Phytophthora blight") live through a real PlantAgent conversation
+  with `country_code="US"` set: correct symptom-category match (wilt),
+  correct region-tagged control text surfaced with the "(regional advice
+  for New Mexico, US (NMSU Circular 549))" label, and its WeatherTrigger
+  correctly has all-None numeric fields (NMSU only gave a qualitative
+  condition, not a number, so nothing was invented) while still firing the
+  qualitative-match check correctly. Manual test byte-identical (tomato
+  unaffected), cross-domain integration test exit 0, both re-run personally
+  not just reported.
+  Reference doc (`plant_pathology_reference.md`) Sources table checked
+  directly: real URLs present for both new sources, and an explicit "web-
+  sourced, not user-supplied" note distinguishing sources 10-11 from the
+  user's own document uploads (sources 1-9) -- this citation-provenance
+  distinction was a specific instruction given the different sourcing
+  method, and it's actually there, not just claimed.
+  New totals: plant_data.py 23 named diseases across 5 project crops;
+  reference doc ~197+ diseases total (up from ~188+).
+- **Wakeword phrase review (2026-09-15).** User asked what the wakewords are;
+  confirmed `agri_voice_agent/wakeword/models/` is still empty (only a
+  `.gitkeep`) -- no `.onnx` models exist, so voice-triggered routing does not
+  work at all yet; only `--domain` bypass testing is possible. Documented
+  wakewords remain "Hey Weather" / "Hey Crop" / "Hey Plant" per the original
+  brief and code docstrings, but flagged "Hey Crop" as acoustically weak
+  (short, hard-stop ending, semantically close to "Plant" -- both single-
+  syllable generic farm nouns, real cross-triggering risk which the brief
+  itself calls out as an expected challenge).
+  User pushed back asking why Crop and Plant need separate wakewords at all
+  -- justified the distinction rather than assuming it: Crop = proactive
+  planning question ("what should I grow, given current weather" --
+  single-shot CropAgent, no symptom involved, could be asked with nothing
+  even planted yet) vs Plant = reactive diagnostic question ("something's
+  wrong with this specific plant" -- multi-turn PlantSession, requires a
+  symptom to describe). Different intents, different conversation shapes,
+  different agents -- genuinely not redundant.
+  Considered merging Crop+Plant into one wakeword with LLM-based intent
+  routing (2 wakewords total, simpler to remember) vs keeping 3 separate
+  (preserves the brief's explicit "multi-wakeword routing sharing one state"
+  technical differentiator, not just a UI choice). **User chose to keep 3.**
+  For the "Hey Crop" replacement itself, offered "Hey Harvest" (2 syllables,
+  acoustically distinct from Weather/Plant, close-enough meaning) as the
+  recommendation -- **user said "I'll think about it," no decision made yet.**
+  This is a pure phrase/filename choice with zero code dependency (the
+  router just loads whatever `.onnx` file is named `crop.onnx` regardless of
+  what phrase it was trained on) -- revisit whenever the user is ready, no
+  urgency, doesn't block anything else.
+  **Reminder for next session:** the user has stated multiple times they will
+  train/provide the `.onnx` models themselves (prior wakeword-model
+  experience) -- this project only consumes trained models, it has no
+  training pipeline of its own. If a future session is asked to "build the
+  wakewords," check whether the user wants help with training tooling
+  (e.g. openWakeWord's training pipeline) specifically, since nothing here
+  does that today.
+- **Region-aware control advice, done and verified.** User pointed out that
+  region/country should factor into disease remedy advice, since climates and
+  what's actually available/registered differ by place. Mid-discussion the
+  user said something that read like restricting India access -- paused and
+  asked directly rather than assume; clarified they meant the OPPOSITE: don't
+  treat this as an India-only or US-only tool, keep it worldwide-neutral, no
+  default-country bias -- this matters because most sourced data so far
+  happens to be India-heavy (TNAU, AGS322/660) with the 1943 Montana bulletin
+  and GRDC Australia guide as the exceptions, so the system must not
+  accidentally treat India as "the" default just because that's where most
+  current data originates.
+  Implementation: `plant_data.py`'s `NamedDisease.control` changed from a
+  single string to `list[RegionalControl]` -- new frozen dataclass
+  (`text`, `country_codes: list[str]` empty=universal, `region_label` for
+  display). Converted all 14 existing disease entries by hand, checking each
+  against `plant_pathology_reference.md`'s own source attribution rather than
+  guessing what's regional: most control text is genuinely universal
+  agronomic practice (rotation, sanitation, timing) and got ONE universal
+  RegionalControl; two entries (rice Brown spot, rice Sheath blight) had
+  specific fungicide products/doses traceable to the TNAU/Tamil Nadu source
+  in the reference doc, split into a universal entry plus a second
+  `country_codes=["IN"]` entry for just that part -- never re-tagged
+  universal-sourced text as regional or vice versa.
+  `farm_state.py`: added `country_code: str = ""` (ISO 3166-1 alpha-2,
+  ""=unknown). `weather.py`: `_geocode()` now also returns the `country`
+  field from OpenWeatherMap's geocoding response (defensive `.get()`, since
+  this couldn't be verified against a live API call -- no key configured in
+  this environment -- so treat as unverified against the real API until
+  tested with real credentials); `WeatherAgent.handle()` writes it into
+  `farm_state.country_code` whenever non-empty.
+  `plant.py`: new `get_control_for_region(disease, country_code)` -- returns
+  every universal entry plus any entry whose `country_codes` contains the
+  farmer's country; wired into `_final_diagnosis()`'s named-disease listing,
+  replacing the old flat `disease.control` string interpolation. Region-
+  specific text gets an explicit "(regional advice for X)" suffix so the
+  farmer/log can tell it's not universal.
+  Verified live: unknown region -> only universal Brown spot advice shown;
+  `country_code="IN"` -> universal advice PLUS the TNAU Metominostrobin/
+  Thiram/Carbendazim dose, clearly labeled "Tamil Nadu, India (TNAU)";
+  `country_code="US"` -> confirmed via assertion that neither "Tamil Nadu"
+  nor "Metominostrobin" leaked into a US farmer's diagnosis (worldwide-
+  neutral behavior holds, not just for the unknown case). Manual test
+  re-run byte-identical (tomato's 2 diseases are both universal-only, so
+  output is unchanged) and cross-domain integration test both exit 0, no
+  regression. `crop.py`/`crop_data.py` untouched and confirmed unaffected
+  (crop manual test also re-run, exit 0) -- region-aware control is
+  Plant-domain only for now; Crop's own variety/practice advice could get
+  the same treatment later but wasn't in scope of this ask.
+  **Not yet done:** the OpenWeatherMap `country` field usage in `weather.py`
+  is unverified against a live API call (no `OPENWEATHER_API_KEY` configured
+  in this dev environment) -- when the user adds a real key, this should be
+  spot-checked once (e.g. via `test_weather_manual.py`, then inspect
+  `farm_state.country_code`) to confirm the field name/format assumption
+  holds.
+- **Third document-extraction pass (5 more PDFs, 4 usable), verified.** User
+  supplied 5 more sources: `Management_Pests_Diseases_Manual.pdf` (45pp),
+  `GrowNote-Durum-West-5-Diseases.pdf` (25pp, GRDC wheat/durum disease guide),
+  `ebook.pdf` (104pp, CABI PestSmart Diagnostic Field Guide),
+  `disease_management_veg_garden (1).pdf` (6pp, UMass home-garden guide),
+  `CropmanagementandDiseasecontrol.pdf` (396pp horticulture compilation).
+  **First finding, before any extraction:** `Management_Pests_Diseases_Manual.pdf`
+  is scanned/image-only -- confirmed via a full-document character-count check
+  (`pypdf` extracted 0 chars across all 45 pages) before assuming it was
+  processable. No OCR tool (tesseract) installed on this machine, and disk
+  space was tight at the time -- asked the user rather than installing OCR
+  tooling or guessing; user chose to skip it and process the other 4. This is
+  recorded in the reference doc's own Sources table so a future session
+  doesn't re-attempt it blind.
+  Delegated the 4 usable PDFs to a background agent with the same established
+  briefing pattern. **Result is notably different in character from the prior
+  two passes** and was independently verified, not just trusted:
+  - `plant_data.py` genuinely UNTOUCHED (confirmed via file mtime predating the
+    agent's run, and disease counts re-checked programmatically: still exactly
+    14 across the 5 project crops). None of the 4 sources had project-crop
+    (tomato/chili/rice/okra/onion) disease content meeting the doc's quality
+    bar -- the agent correctly declined to force in thin entries just to show
+    progress, consistent with this project's reliability-first design
+    philosophy. This is a GOOD outcome, not a failure -- worth remembering
+    that "agent found nothing to add" is a legitimate, sometimes correct
+    result, not automatically suspicious.
+  - `plant_pathology_reference.md` grew 1503 -> ~1600+ lines (165KB ->
+    194KB), 235 `###` subsections (up from 223). All 8 new disease entries
+    landed in the existing `## Wheat` section (Crown rot, Take-all root
+    disease, Pythium root rot, Yellow spot, Septoria nodorum/tritici blotch,
+    Fusarium head blight, Root lesion nematodes) from the GRDC durum source --
+    correctly folded into Wheat rather than creating a separate "Durum"
+    section, per the doc's own crop-consolidation convention. Spot-checked
+    the Crown rot and Take-all entries directly: genuinely detailed,
+    well-cited agronomic content (PREDICTA B soil testing, fungicide group
+    numbers, variety-specific yield-loss ratings) -- not padding.
+  - Two pure-methodology sources (CABI PestSmart field guide, UMass
+    home-garden guide) correctly folded into `## General pathology concepts`
+    rather than forced into crop sections -- neither had disease-specific
+    symptom/control detail, both are diagnostic/prevention methodology.
+  - `CropmanagementandDiseasecontrol.pdf` (396pp): agent skimmed its full
+    17-chapter table of contents, read the two disease-titled/adjacent
+    chapters in full (Ch.4 pp.57-73, Ch.17 pp.370-383), found both to be
+    generic IPM essays with no usable symptom/control detail, and ran a
+    full-document pathogen-genus scan that surfaced only bare name lists in
+    non-project chapters. Correctly reported as "checked, nothing usable"
+    rather than silently skipped. **One inconsistency I caught and fixed:**
+    this 396pp source's "nothing usable" finding was documented in the doc's
+    Summary section but NOT in the Sources table, unlike the scanned-PDF skip
+    -- added a Sources table row for it too, so both the quick-reference table
+    and the detailed Summary account this source, and a future pass doesn't
+    waste time re-skimming 396 pages that were already checked.
+  - No new `WeatherTrigger` data added (correctly -- none of the new sources
+    gave a project-crop disease a genuine new numeric threshold; wheat isn't
+    a project crop so its new condition data, e.g. "leaf wetness >6h at
+    15-28C" for yellow spot, had nowhere to attach in `plant_data.py` even if
+    it were).
+  - Verified independently: `py_compile` clean, disease counts unchanged at
+    14 (all 5 project crops individually re-checked), manual test re-run
+    exit 0 with byte-identical output (expected, since plant_data.py wasn't
+    touched), project root confirmed intact (AGRI_VOICE_AGENT_BRIEF.md still
+    present, no repeat of the earlier deletion incident).
+  **Why this matters:** confirms the agent (and the verification habit) don't
+  just rubber-stamp large source dumps into disease-count inflation -- a
+  "mostly nothing new for project crops" result from 4 real sources is a
+  legitimate, trustworthy outcome, and the standing crop-based-reference
+  convention continues to scale correctly (including gracefully declining an
+  unreadable scanned source and a low-yield 396-page compilation) across a
+  third pass.
+- **Structured per-disease weather triggers, done and verified.** User asked
+  whether to fine-tune an LLM on the collected reference data -- explained why
+  not (contradicts the project's deterministic-diagnosis design; reference
+  data isn't shaped for fine-tuning; budget/timeline don't support it; the
+  knowledge is already usable as structured data). User then asked for real
+  weather-based disease occurrence reasoning, with an explicit constraint:
+  "weather only should come into the conversation only if those data are
+  available" -- i.e. optional per-disease, never a forced/generic guess.
+  Implementation: replaced `plant_data.py`'s `NamedDisease.weather_risk:
+  str | None` (a free-text label that NO code ever actually read -- confirmed
+  via grep before touching it) with a new `WeatherTrigger` frozen dataclass
+  (`min_humidity_pct`, `min_recent_rainfall_mm`, `min_temp_c`, `max_temp_c`,
+  `description`) and a `NamedDisease.weather_trigger: WeatherTrigger | None`
+  field. Populated real thresholds -- pulled directly from each disease's own
+  "Conditions" text in `plant_pathology_reference.md`, not invented -- for
+  rice Blast (RH 93-99%, night temp 15-20C or below 26C), Brown spot (25-30C,
+  RH>80%), Sheath blight (RH 96-97%, temp 30-32C), chili anthracnose (~28C at
+  92% RH), and onion downy mildew/purple blotch (kept as a loose humidity-only
+  threshold since the 1943 source only says "wet foliage and humid
+  conditions", no precise figure to encode). The other 9 of 14 named diseases
+  kept `weather_trigger=None` since their sources give no specific-enough
+  condition -- per the user's constraint, this means those diseases get NO
+  weather commentary in the diagnosis, not a guessed one.
+  In `plant.py`: added `weather_matches_trigger(trigger, farm_state)` --
+  checks only the threshold fields a given trigger actually sets, ignoring
+  unset ones (so a humidity-only trigger doesn't accidentally also require a
+  temperature match). Wired into `_final_diagnosis()`'s named-disease listing:
+  each disease line gets an appended "Current weather matches/does not match
+  this disease's known risk conditions (...)" clause ONLY when that specific
+  disease has a `weather_trigger` set -- diseases without one are listed with
+  zero weather text, exactly as instructed.
+  **Important distinction documented in plant.py's module docstring:** this is
+  a SECOND, separate weather mechanism from the pre-existing
+  `weather_adjusted_causes()`. That older function still runs unconditionally
+  and ranks the broad CAUSE CATEGORIES (fungus/nutrient/insect/etc, via a
+  coarse humid>=70%/wet>=20mm check) -- it doesn't touch named diseases at
+  all. The new `weather_matches_trigger()` operates one level more specific,
+  on individual NAMED diseases, only when sourced data exists. Both exist
+  side by side; don't conflate them if touching this code again.
+  Verified: `py_compile` clean on both files; `weather_risk` grepped with zero
+  hits remaining; manual test re-run exit 0, byte-identical output for
+  tomato's two diseases (both have no trigger, confirming "no data = no
+  weather text" holds); live-tested rice Brown spot under matching weather
+  (27C/85% RH -> "matches") and non-matching weather (15C/40% RH -> "does not
+  match"), and confirmed Blast/Sheath blight correctly reported "does not
+  match" in both test scenarios since neither test hit their specific (higher)
+  thresholds; cross-domain integration test re-run exit 0, no regression to
+  the Weather->Plant->Crop chain.
+  **Aside:** hit a real disk-space outage mid-session (C: drive dropped to
+  ~4.4MB free, would have made writes/compiles unreliable) -- paused and had
+  the user free up space before continuing, rather than risk corrupting
+  work by pushing through it.
+- **Second document-extraction pass (4 more PDFs, Sep 2026), verified good.** User
+  supplied 4 more sources and asked to fold in disease + management/remedy content:
+  `8.pdf` (TNAU Tamil Nadu crop disease guide, 43pp), `AGS 322` (AgriMoon field-crop
+  disease course notes, 54pp), `ManagementofPlantdiseases.pdf` (ed. Aqleem Abbas,
+  general theory only, 41pp), `AGS660` (AgriMoon general disease-management
+  principles, 127pp, no crop catalog). Delegated to a background agent with the
+  same "read the doc's own Summary section for the merge convention" briefing
+  pattern as the first pass. Result, independently verified (not just trusted from
+  the agent's self-report, per the lesson from the earlier file-deletion incident):
+  - `plant_pathology_reference.md` grew 1063 -> 1503 lines, 34 -> 39 crop sections
+    (added Finger millet, Blackgram/Greengram, Sunflower as new sections), ~100+ ->
+    ~180+ total diseases. Sources table now has 6 rows, Index table updated with
+    real per-crop counts -- spot-checked both against actual file content, not just
+    the agent's claims.
+  - `plant_data.py`: rice went from 3 to 4 named diseases (added Sheath blight,
+    *Rhizoctonia solani*, `symptom_category="leaf_spot"`,
+    `weather_risk="high_humidity_high_rain"`); Blast and Brown spot control text
+    enriched with TNAU-sourced fungicide specifics (carbendazim, hexaconazole).
+    Verified: `py_compile` clean, all `symptom_category` values across all 14
+    named diseases (5 crops) confirmed to be real `SYMPTOM_CATEGORIES` keys in
+    `plant.py` (checked programmatically, not just the agent's claim), manual test
+    re-run exit 0 no regression, AND the new Sheath blight entry spot-checked live
+    through a real `PlantAgent.handle()` conversation (symptom "greyish spots near
+    the waterline on the leaf sheath" -> correctly matched `leaf_spot` category ->
+    Sheath blight appeared alongside Blast/Brown spot in the final diagnosis with
+    the enriched control text visible).
+  - `## General pathology concepts` section absorbed the two pure-theory sources
+    (`ManagementofPlantdiseases.pdf`, `AGS660`) as new subsections rather than
+    forcing them into crop buckets -- confirmed real content present (six
+    classical disease-control principles / Whetzel 1929 framework, collateral-host
+    tables, crop-rotation worked examples, an antibiotic-mode-of-action catalog),
+    not just claimed in the report.
+  - The doc's own `## Summary` section was updated with an honest account of this
+    second pass (not just the first), and its "When adding a new source"
+    instructions were extended to cover the new case of a pure-theory source (fold
+    into General pathology concepts, not a crop section) -- the convention is
+    self-documenting for whatever source arrives next.
+  - Project root confirmed intact after this run (`AGRI_VOICE_AGENT_BRIEF.md`
+    still present) -- the earlier file-deletion incident did NOT recur.
+  **Why this matters:** this confirms the standing crop-based-reference convention
+  (see the entry below) scales correctly across a second, larger, multi-document
+  merge pass without degrading — validates the approach for future document
+  additions, which the user has said will keep coming.
+- **`plant_pathology_reference.md` is organized BY CROP, not by source chapter/document.**
+  User stated intent: they will keep providing more plant disease source documents
+  over time, and want everything documented and accessible, not just the 5 crops
+  wired into the live voice agent. Reorganized the doc (originally ~694 lines,
+  chapter-based from one textbook) into ~1063 lines, ~34 `## CropName` sections
+  (5 project crops first: Tomato/Chili/Rice/Okra/Onion, then ~30 more: Potato,
+  Wheat, Barley, Maize, Sorghum, Pearl millet, Sugarcane, Cotton, Pea, Bean, Gram,
+  Pigeon pea, Groundnut, Linseed, Jute, Mango, Grape, Apple, Citrus, Banana,
+  Papaya, Crucifers, Cucurbits, Coriander, Ginger, Turmeric, Palms, Coffee, Betel
+  vine, Peach/apricot, Brinjal, Sesame, Sandalwood, Seedlings/nursery), plus a
+  "General pathology concepts" section for non-crop-specific theory (powdery vs
+  downy mildew biology, vascular wilt theory, root disease ecology, etc. --
+  doesn't force theory into a crop bucket) and a final "Summary" section with
+  explicit instructions for adding future sources. Added a `## Sources` table
+  (source doc -> type -> what it added) and a `## Index` table (crop -> disease
+  count -> in plant_data.py? -> primary source) at the top, both meant to be kept
+  updated as more documents arrive -- **this is now the standing convention: any
+  new disease source gets merged into the matching `## CropName` section (or a
+  new section added) rather than appended as a new chapter/source block, and the
+  Sources + Index tables get updated to match.**
+  **Why:** user's own words: "i want everything - i am gonna provide more plant
+  diseases so we have to keep everything documented so everything is accessible."
+  Chapter-based grouping (fine for one source) doesn't scale once multiple future
+  sources need merging -- crop-based grouping means "everything about wheat"
+  stays in one place regardless of which document a fact came from.
+  **Verified after reorg:** `plant_data.py` still compiles unaffected (doc-only
+  change); grepped the reorganized doc for `## ` headers (34 crop sections + Index/
+  Sources/Summary, no leftover chapter headers) and spot-checked the chili
+  anthracnose entry (the one that directly feeds `plant_data.py`'s
+  `NAMED_DISEASES`) is intact with its `weather_risk` note preserved.
+- Language: Python.
+- Wakeword engine: user is training/providing their own `.onnx` model files
+  directly (not using OpenWakeWord's Python package or Porcupine) — router code
+  just loads whatever `.onnx` files appear in `agri_voice_agent/wakeword/models/`.
+- LLM: Google Gemini free tier, via the **new** `google-genai` SDK (`google.genai`),
+  not the deprecated `google-generativeai` package — that package hit end-of-support
+  during this build (Sep 2026) and was swapped out immediately in `llm_client.py`.
+  If future work touches `llm_client.py`, keep using `from google import genai`.
+- User is plugging in real API keys (AssemblyAI, Gemini, OpenWeatherMap) later —
+  built everything to fail gracefully / fall back to deterministic output when keys
+  are absent, so domain logic is testable without live credentials.
+
+## Build status (updated as of this log's last edit)
+- [x] Project scaffold: `farm_state.py` (shared cross-domain state, save/load
+      verified), `config.py`, `llm_client.py`, `wakeword/router.py` (ONNX multi-model
+      router, domains silently disabled if their `.onnx` file is missing).
+- [x] Weather domain agent (`domains/weather.py`) — OpenWeatherMap free tier,
+      geocode + current + forecast, writes into farm_state. Not yet tested against a
+      live key (user will plug in key later).
+- [x] Crop domain agent (`domains/crop.py` + `domains/crop_data.py`) — deterministic
+      rule-based scoring (NOT LLM-decided suitability) against a fixed 5-crop table
+      (tomato, chili, rice, okra, onion), LLM only phrases final output, falls back
+      to deterministic text if no Gemini key set. Verified working end-to-end
+      including cross-domain injection: a symptom report added to farm_state for
+      "tomato" correctly surfaced as a warning in the tomato crop assessment.
+- [x] Plant disease diagnostic conversation (`domains/plant.py` + `domains/plant_data.py`)
+      — the primary differentiator per the brief. Built from two user-supplied
+      sources: (1) Morris & Afanasiev, "Handbook of Plant Diseases and Their
+      Control for Montana", Montana Extension Service Bulletin 216 (1943, public
+      domain) — only tomato and onion overlap with crop_data.py's 5 crops, so only
+      those two got named-disease entries (`NAMED_DISEASES` in plant_data.py);
+      (2) CABI's "Plantwise Diagnostic Field Guide" (2015) — used as the structural
+      model for a generic, crop-agnostic symptom/cause decision framework
+      (`SYMPTOM_CATEGORIES`: wilt, leaf_spot, yellowing, mosaic, distortion,
+      little_leaf, galls, drying_blight, each cross-referenced against
+      fungus/bacteria/virus/nematode/insect/mite/nutrient/physical causes with
+      follow-up questions), which covers chili/rice/okra too since no named-disease
+      source exists for them. NOT a RAG pipeline — rejected earlier as overkill;
+      both sources were hand-converted once into static Python data, matching the
+      crop_data.py pattern, never re-fetched or reinterpreted at runtime.
+      Architecture: `PlantSession` (dataclass) holds one multi-turn conversation —
+      `start()` matches free-text symptom description to a category via keyword
+      lookup (deterministic, no LLM), asks up to `MAX_FOLLOW_UPS=2` follow-up
+      questions from that category's list (LLM only rephrases the question text,
+      never decides which question), then `_final_diagnosis()` ranks causes using
+      `weather_adjusted_causes()` — a deterministic reorder that boosts
+      fungus/water_mould/bacteria when farm_state's humidity >= 70% or recent
+      rainfall >= 20mm, else boosts nutrient/mite/insect. This is the cross-domain
+      reasoning the brief asks for, and it's fully deterministic, not LLM-inferred.
+      `PlantAgent` wraps sessions by `session_id` (main.py uses "default") and logs
+      the finished diagnosis back into `farm_state.recent_symptoms_reported` so the
+      Crop agent picks it up. Verified live: same symptom + same crop, humid vs dry
+      weather, produces different top-ranked cause (fungus vs insect/nutrient) and
+      both get logged distinctly — see `tests/test_plant_manual.py` output.
+      `main.py` updated: added `MULTI_TURN_DOMAINS = {"plant"}` — unlike
+      Weather/Crop (single-shot, `agent.handle(farm_state)`, turn ends
+      immediately), Plant needs `agent.handle(farm_state, transcript)` and the ASR
+      session stays open across turns until `PlantAgent.is_done()` (public method,
+      checks the "default" session) returns True.
+- [x] AssemblyAI streaming ASR integration (`asr.py`) — wraps
+      `assemblyai.streaming.v3.RealTimeTranscriber` (alias `StreamingClient`).
+      **Important:** verified the exact API by reading the installed SDK source
+      directly (assemblyai==1.5.4), not by trusting fetched docs — a WebFetch on
+      the AssemblyAI docs page and a WebSearch summary gave two different,
+      partially-conflicting class-name stories (one said `RealTimeTranscriber` is
+      primary, another said `StreamingClient` is primary). Ground truth: they are
+      true aliases of each other (both work identically), confirmed in
+      `assemblyai/streaming/v3/__init__.py` and `client.py`/`models.py`. If
+      touching `asr.py` again, trust the installed package source over fetched
+      docs when they disagree. Imports verified working in this environment.
+- [x] Microphone audio capture (`audio_input.py`) — `sounddevice.InputStream`,
+      16kHz mono int16, delivers both numpy array (for wakeword scoring) and raw
+      PCM bytes (for ASR) per frame via one callback.
+- [x] Main orchestration loop (`main.py`) — `VoiceAgentLoop` state machine: IDLE
+      (wakeword router scores every frame) -> ACTIVE (frames stream to ASR until
+      a final transcript arrives, then the matching domain agent handles it
+      against farm_state, response printed, state saved) -> back to IDLE. Has a
+      `--domain` flag to force one domain and skip wakeword detection entirely,
+      for testing the ASR/domain wiring before `.onnx` models exist. Verified:
+      constructs without crashing given zero API keys/models (agents that need
+      missing keys are just reported unavailable, not fatal); `python -m
+      agri_voice_agent.main --domain crop` is the documented smoke-test path once
+      an AssemblyAI key is added.
+- [x] Live demo dashboard (frontend) — `events.py` (`AgentEvent`/`EventBus`, a
+      tiny synchronous pub/sub) added so `main.py` emits events (`state`,
+      `transcript`, `response`, `farm_state`) without knowing anything about a
+      UI — `VoiceAgentLoop.__init__` now takes an optional `events: EventBus`
+      param, defaults to a no-listener bus so existing terminal-only usage is
+      unaffected. `dashboard_server.py` runs the existing `VoiceAgentLoop`
+      unmodified in a background thread, bridges its synchronous event
+      callbacks into the asyncio loop via `asyncio.run_coroutine_threadsafe`,
+      and serves both a static single-page dashboard (`static/index.html`) and
+      a `/ws` WebSocket that broadcasts every event live. Dashboard shows:
+      active domain (with a pulsing indicator), live conversation feed
+      (transcript/response bubbles color-coded per domain), and a farm_state
+      panel (weather stats, crops grown, last 5 symptom reports with
+      diagnosis) that updates in real time — built specifically to visually
+      prove the cross-domain reasoning claim during the demo, not just as a
+      generic chat UI. Run with `python -m agri_voice_agent.dashboard_server
+      --domain crop` (or `--domain plant`/`weather`, or omit once wakeword
+      models exist), open localhost:8000. New deps: `fastapi`, `uvicorn[standard]`.
+      **Bug caught and fixed before shipping:** the voice-agent background
+      thread would silently die (uncaught exception, e.g. missing
+      ASSEMBLYAI_API_KEY) while the dashboard server kept running with no
+      indication anything had failed — wrapped `_run_voice_agent_loop` in a
+      try/except that emits an `error` event and an `idle` state event instead,
+      so the page always reflects reality. Also fixed a FastAPI `on_event`
+      deprecation by switching to a `lifespan` context manager. Verified: server
+      starts, HTTP 200 on `/`, WebSocket delivers the initial `farm_state`
+      snapshot on connect, and a full event sequence (farm_state -> transcript
+      -> response -> farm_state) was confirmed via a scripted `_on_final_transcript`
+      call bypassing the need for a live mic/ASR key.
+- [x] Farmer-facing dashboard (`farmer_server.py` + `static/farmer.html`) —
+      separate from the technical dashboard above; a single auto-routing
+      chat (`POST /chat`, `WS /voice`) instead of the wakeword pipeline,
+      full two-column redesign, multi-farm support (`FarmProfile`/
+      `FarmState` with farm disambiguation), a blocking location modal
+      with GPS/IP auto-detect, and deterministic cross-domain intent
+      routing via `intent.py`. See this log's 2026-09-16 entry above for
+      the full detail and the bugs found/fixed along the way. Run with
+      `python -m agri_voice_agent.farmer_server`, open localhost:8001.
+- [x] Cross-domain integration pass — `tests/test_cross_domain_integration.py`
+      chains WeatherAgent -> PlantAgent -> CropAgent against one shared
+      `FarmState`, matching the per-domain manual tests' style (synthetic
+      weather, no pytest framework) but asserting real conditions instead of
+      just printing output: (1) the same 3-turn wilt conversation on tomato
+      under humid-vs-dry synthetic weather is asserted to produce different
+      diagnoses (`assert humid_diagnosis != dry_diagnosis`) -- confirmed live:
+      humid -> "wilt (likely cause: fungus)", dry -> "wilt (likely cause:
+      insect)"; (2) CropAgent's response for the same crop is asserted to
+      literally contain the Plant diagnosis's cause keyword in its
+      disease_warnings text -- confirmed both scenarios pass, and the humid
+      scenario additionally surfaces crop_data.py's pre-existing "late blight"
+      weather risk alongside the Plant-logged report, showing both
+      cross-domain paths (crop_data.py's own weather rules AND Plant's
+      farm_state injection) contribute together. Supports `--live` (uses the
+      real WeatherAgent instead of synthetic snapshots) which was verified to
+      fail cleanly with a clear message (not a traceback) when
+      OPENWEATHER_API_KEY is absent, matching the project's fail-gracefully
+      convention. This is the concrete evidence for the brief's "one
+      integrated agent, not three disconnected features" claim -- worth
+      running again after any change to farm_state.py, crop_data.py, or
+      plant_data.py to confirm the chain still holds.
+- [x] Expanded plant disease knowledge base + new documents. User supplied two
+      more source documents:
+      (1) `C:\Users\Hype\Downloads\dokumen.pub_plant-pathology-0070473994-9780070473997.pdf`
+      — an 865-page Agrios-style general plant pathology textbook, organized by
+      pathogen type not crop. Delegated extraction to a background agent (task
+      "Extract plant pathology textbook into reference + fill data gaps") with a
+      thorough brief covering exact chapter page-ranges (confirmed via
+      `pypdf`'s outline/`get_destination_page_number`) and instructions to (a)
+      catalog EVERY disease across the 14 relevant chapters (pages 330-799) into
+      a new `plant_pathology_reference.md` at the project root (~694 lines,
+      100+ diseases, organized to match the book's own chapter structure,
+      project-crop-relevant entries flagged), and (b) fill `plant_data.py`'s
+      `NAMED_DISEASES` gap for chili/rice/okra (previously zero named-disease
+      coverage, only the generic framework) — added 2 chili diseases
+      (ripe-fruit-rot/die-back anthracnose, bacterial wilt), 3 rice diseases
+      (brown spot, blast, stem rot), 2 okra diseases (yellow vein mosaic,
+      root-knot nematode), tomato/onion left untouched. Independently
+      re-verified after the agent reported back (do not just trust agent
+      self-reports): compiled clean, all `symptom_category` values confirmed to
+      be real `SYMPTOM_CATEGORIES` keys (a silent-breakage risk if wrong),
+      `get_named_diseases()` non-empty for all 5 crops, full manual + 
+      cross-domain integration tests re-run and passing, and one new entry
+      (chili anthracnose) spot-checked live through `PlantAgent.handle()` to
+      confirm it actually surfaces correctly in a real conversation, not just
+      in the data structure.
+      **Important incident:** after this agent's run, `AGRI_VOICE_AGENT_BRIEF.md`
+      was found DELETED from the project root (the agent's own report flagged
+      this: "brief did not actually exist... proceeded using task description
+      context instead" — likely the agent's file-exploration tooling
+      mishandled it, root cause not confirmed). Caught by independently
+      verifying the agent's environment claims rather than trusting them at
+      face value, and immediately restored the file verbatim from this
+      conversation's context (project has no git repo, so no VCS history to
+      recover from — memory/conversation context was the only backup). If a
+      background agent is ever given write access to this project again,
+      verify the project root's file listing before AND after the run, not
+      just after.
+      (2) `C:\Users\Hype\Downloads\ec1270-2014.pdf` — a short (24-page) Univ. of
+      Nebraska-Lincoln Extension bulletin "Common Signs and Symptoms of
+      Unhealthy Plants" (Timmerman et al., 2014). General ornamental/landscape
+      symptom-terminology glossary, NOT crop- or disease-specific — read and
+      extracted directly (small enough, no agent needed). Two additions made to
+      `plant.py`: (a) significantly expanded `_SYMPTOM_KEYWORDS` with precise
+      terms the bulletin defines (canker, chlorosis, dieback, mildew, pustule,
+      ringspot, scorch, shot-hole, stunt, witches' broom, etc.) that farmers
+      might say but weren't previously matched — multi-word phrases ordered
+      before the shorter substrings they contain, since `match_symptom_category`
+      returns the first hit in dict-iteration order; (b) added a NEW
+      deterministic biotic-vs-abiotic sanity check (`has_abiotic_hint()` +
+      `_ABIOTIC_HINT_MARKERS`), sourced from the bulletin's explicit
+      biotic-pattern-vs-abiotic-pattern heuristic (uneven/sharp margin,
+      random/uniform distribution, spreads-to-related-plants/affects-
+      unrelated-species) — this was a real gap, "Hey Plant" previously always
+      assumed a biological cause with no way to catch "actually this is a
+      sprinkler/fertilizer/chemical issue, not a disease." Implemented as a
+      non-blocking caveat appended to `_final_diagnosis()`'s output (checked on
+      both the initial symptom report and every follow-up answer) rather than a
+      forced extra question turn, to avoid disrupting `MAX_FOLLOW_UPS` budget
+      or `main.py`'s turn-counting. Verified live: new keywords match correctly
+      (canker/chlorosis/dieback/ring spot all confirmed), abiotic hint detection
+      confirmed both positive ("sprinkler," "other kinds of plants nearby") and
+      negative (normal symptom text) cases, full conversation test with an
+      abiotic-hint phrase correctly appended the caveat to the final diagnosis.
+      Existing manual test and cross-domain integration test both re-run clean
+      after these changes (exit 0, no behavior change to the un-hinted path).
+- [ ] Wakeword `.onnx` models — still not provided; router handles this
+      gracefully but no `.onnx` files exist yet at
+      `agri_voice_agent/wakeword/models/`. This is the only remaining
+      blocker that depends on the user (they said they'd train/provide these
+      themselves) rather than something buildable independently.
+- [ ] Live end-to-end test with real API keys + physical microphone — still
+      nothing has been run against live AssemblyAI/Gemini/OpenWeatherMap
+      services; no `.env` file exists yet in the project (confirmed absent as
+      of this log entry). Everything to date is import/construction-verified
+      or run with synthetic data only.
+- [ ] Demo polish/rehearsal.
+
+## Why this matters
+**Why:** Hackathon deadline is Sep 30 2026, build started ~Sep 14. Keeping this log
+current means a future session (or context-compacted continuation) can resume
+exactly where this one left off without re-deriving file layout or re-discovering
+the deprecated-SDK gotcha.
+
+**How to apply:** Before starting a new build session on this project, read this
+file first. After finishing a meaningful chunk of work, update the status list and
+add any new non-obvious decisions here rather than letting them live only in chat
+history.

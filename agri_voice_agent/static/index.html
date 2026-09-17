@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agri Voice Agent — Live Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1512;
+    --panel: #161f1a;
+    --panel-border: #263229;
+    --text: #e8efe9;
+    --muted: #8fa596;
+    --accent: #59c97a;
+    --accent-dim: #2f6b41;
+    --weather-color: #4fa3e3;
+    --crop-color: #d6a54c;
+    --plant-color: #59c97a;
+    --error: #e05656;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    font-size: 0.85rem;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .dot.active { background: var(--plant-color); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    min-width: 0;
+  }
+  .panel h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 10px 0;
+  }
+
+  #conversation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 60vh;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .msg {
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    line-height: 1.4;
+    word-wrap: break-word;
+    border-left: 3px solid var(--panel-border);
+  }
+  .msg .meta {
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+  .msg.transcript { background: #10241c; border-left-color: var(--accent); }
+  .msg.response { background: #16201a; border-left-color: var(--accent-dim); }
+  .msg.error { background: #241212; border-left-color: var(--error); }
+  .msg.system { background: transparent; border-left-color: var(--panel-border); color: var(--muted); font-style: italic; }
+  .domain-tag { font-weight: 600; }
+  .domain-tag.weather { color: var(--weather-color); }
+  .domain-tag.crop { color: var(--crop-color); }
+  .domain-tag.plant { color: var(--plant-color); }
+
+  .empty-hint { color: var(--muted); font-size: 0.85rem; padding: 8px 0; }
+
+  .weather-row { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat { min-width: 90px; }
+  .stat .value { font-size: 1.3rem; font-weight: 600; }
+  .stat .label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .crops-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .crop-chip {
+    background: #1d2921;
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 0.8rem;
+  }
+
+  .symptom-item {
+    padding: 8px 0;
+    border-top: 1px solid var(--panel-border);
+    font-size: 0.85rem;
+  }
+  .symptom-item:first-child { border-top: none; }
+  .symptom-item .crop-name { font-weight: 600; color: var(--accent); }
+  .symptom-item .diag { color: var(--muted); font-size: 0.78rem; }
+
+  code.location { color: var(--muted); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🌾 Agricultural Voice Agent — Live Dashboard</h1>
+  <div style="display:flex; gap:8px; flex-wrap: wrap;">
+    <span class="status-pill"><span id="conn-dot" class="dot"></span><span id="conn-label">connecting…</span></span>
+    <span class="status-pill"><span id="active-dot" class="dot"></span><span id="active-label">idle</span></span>
+  </div>
+</header>
+
+<div class="grid">
+  <section class="panel">
+    <h2>Conversation</h2>
+    <div id="conversation">
+      <div class="empty-hint">Waiting for a wakeword ("Hey Weather" / "Hey Crop" / "Hey Plant")…</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Shared Farm State</h2>
+    <div id="location"><code class="location">location: —</code></div>
+    <div class="weather-row" id="weather-row"></div>
+    <div>
+      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">Crops grown</div>
+      <div class="crops-list" id="crops-list"></div>
+    </div>
+    <div>
+      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:10px 0 6px;">Recent symptom reports</div>
+      <div id="symptoms-list"><div class="empty-hint">None yet</div></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const conversationEl = document.getElementById('conversation');
+const connDot = document.getElementById('conn-dot');
+const connLabel = document.getElementById('conn-label');
+const activeDot = document.getElementById('active-dot');
+const activeLabel = document.getElementById('active-label');
+const locationEl = document.getElementById('location');
+const weatherRowEl = document.getElementById('weather-row');
+const cropsListEl = document.getElementById('crops-list');
+const symptomsListEl = document.getElementById('symptoms-list');
+
+let conversationStarted = false;
+
+function addMessage(kind, domain, text) {
+  if (!conversationStarted) {
+    conversationEl.innerHTML = '';
+    conversationStarted = true;
+  }
+  const div = document.createElement('div');
+  div.className = 'msg ' + kind;
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const domainSpan = domain ? `<span class="domain-tag ${domain}">${domain}</span> — ` : '';
+  meta.innerHTML = domainSpan + (kind === 'transcript' ? 'farmer said' : kind === 'response' ? 'agent replied' : kind);
+  div.appendChild(meta);
+  const body = document.createElement('div');
+  body.textContent = text;
+  div.appendChild(body);
+  conversationEl.appendChild(div);
+  conversationEl.scrollTop = conversationEl.scrollHeight;
+}
+
+function renderFarmState(fs) {
+  // FarmState now holds a list of farms (a farmer can have more than one)
+  // plus which is active -- this technical dashboard only ever shows the
+  // active one (farm selection by voice is the farmer dashboard's job).
+  const farm = (fs.farms && fs.active_farm_index != null) ? fs.farms[fs.active_farm_index] : null;
+  if (!farm) {
+    locationEl.innerHTML = `<code class="location">location: —</code>`;
+    weatherRowEl.innerHTML = '';
+    cropsListEl.innerHTML = '<div class="empty-hint">No farm yet</div>';
+    symptomsListEl.innerHTML = '<div class="empty-hint">None yet</div>';
+    return;
+  }
+
+  locationEl.innerHTML = `<code class="location">location: ${farm.location || '—'} (${farm.name})</code>`;
+
+  const w = farm.current_weather || {};
+  weatherRowEl.innerHTML = '';
+  const stats = [
+    ['Temp', w.temp_c != null ? w.temp_c + '°C' : '—'],
+    ['Humidity', w.humidity_pct != null ? w.humidity_pct + '%' : '—'],
+    ['Rain (recent)', w.rainfall_recent_mm != null ? w.rainfall_recent_mm + 'mm' : '—'],
+    ['Rain (7d fc)', w.rainfall_forecast_7day_mm != null ? w.rainfall_forecast_7day_mm + 'mm' : '—'],
+  ];
+  for (const [label, value] of stats) {
+    const div = document.createElement('div');
+    div.className = 'stat';
+    div.innerHTML = `<div class="value">${value}</div><div class="label">${label}</div>`;
+    weatherRowEl.appendChild(div);
+  }
+
+  cropsListEl.innerHTML = '';
+  const crops = farm.crops_grown || [];
+  if (crops.length === 0) {
+    cropsListEl.innerHTML = '<div class="empty-hint">None set</div>';
+  } else {
+    for (const crop of crops) {
+      const chip = document.createElement('span');
+      chip.className = 'crop-chip';
+      chip.textContent = crop;
+      cropsListEl.appendChild(chip);
+    }
+  }
+
+  const symptoms = farm.recent_symptoms_reported || [];
+  symptomsListEl.innerHTML = '';
+  if (symptoms.length === 0) {
+    symptomsListEl.innerHTML = '<div class="empty-hint">None yet</div>';
+  } else {
+    for (const s of symptoms.slice(-5).reverse()) {
+      const div = document.createElement('div');
+      div.className = 'symptom-item';
+      const diag = s.diagnosis ? `<div class="diag">diagnosis: ${s.diagnosis}</div>` : '';
+      div.innerHTML = `<span class="crop-name">${s.crop}</span>: ${s.symptoms}${diag}`;
+      symptomsListEl.appendChild(div);
+    }
+  }
+}
+
+function setActive(status, domain) {
+  if (status === 'active') {
+    activeDot.className = 'dot active';
+    activeLabel.textContent = domain ? `listening: ${domain}` : 'active';
+  } else {
+    activeDot.className = 'dot';
+    activeLabel.textContent = 'idle';
+  }
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    connDot.className = 'dot live';
+    connLabel.textContent = 'connected';
+  };
+
+  ws.onclose = () => {
+    connDot.className = 'dot';
+    connLabel.textContent = 'disconnected — retrying…';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch (e) {
+      return;
+    }
+    const { type, payload } = msg;
+    if (type === 'state') {
+      setActive(payload.status, payload.domain);
+    } else if (type === 'transcript') {
+      addMessage('transcript', payload.domain, payload.text);
+    } else if (type === 'response') {
+      addMessage('response', payload.domain, payload.text);
+    } else if (type === 'error') {
+      addMessage('error', payload.domain, payload.message);
+    } else if (type === 'farm_state') {
+      renderFarmState(payload.farm_state);
+    }
+  };
+}
+
+connect();
+</script>
+
+</body>
+</html>

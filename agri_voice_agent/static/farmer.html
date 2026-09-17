@@ -1,0 +1,1589 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Farm Voice Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f7f5;
+    --surface: #ffffff;
+    --surface-sunken: #f0f2ee;
+    --ink: #1c2621;
+    --ink-soft: #5b6660;
+    --ink-faint: #93a09a;
+    --line: #e3e7e2;
+    --line-strong: #cfd6cf;
+
+    --brand: #1f4a3a;
+    --brand-ink: #ffffff;
+    --accent: #3f8459;
+    --accent-soft: #e6f2ea;
+
+    --weather: #b6782e;
+    --weather-soft: #fbf0df;
+    --plant: #a1502f;
+    --plant-soft: #f7e8e0;
+
+    --shadow-sm: 0 1px 2px rgba(20, 30, 24, 0.06);
+    --shadow-md: 0 4px 16px rgba(20, 30, 24, 0.08);
+    --shadow-lg: 0 12px 32px rgba(20, 30, 24, 0.12);
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141815;
+      --surface: #1c2320;
+      --surface-sunken: #232b27;
+      --ink: #eef1ee;
+      --ink-soft: #a3aea7;
+      --ink-faint: #6d7a73;
+      --line: #2c3630;
+      --line-strong: #3a4740;
+
+      --brand: #4a9370;
+      --brand-ink: #0e140f;
+      --accent: #5fac7f;
+      --accent-soft: #22322a;
+
+      --weather: #d99a4c;
+      --weather-soft: #2e2419;
+      --plant: #d8815c;
+      --plant-soft: #302019;
+
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+      --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.45);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #141815;
+    --surface: #1c2320;
+    --surface-sunken: #232b27;
+    --ink: #eef1ee;
+    --ink-soft: #a3aea7;
+    --ink-faint: #6d7a73;
+    --line: #2c3630;
+    --line-strong: #3a4740;
+
+    --brand: #4a9370;
+    --brand-ink: #0e140f;
+    --accent: #5fac7f;
+    --accent-soft: #22322a;
+
+    --weather: #d99a4c;
+    --weather-soft: #2e2419;
+    --plant: #d8815c;
+    --plant-soft: #302019;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.45);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, .label-caps, button, .btn-label {
+    font-family: "Manrope", -apple-system, sans-serif;
+  }
+
+  a { color: inherit; }
+
+  ::selection { background: var(--accent-soft); color: var(--ink); }
+
+  /* ---------- Shell layout ---------- */
+
+  .shell {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    min-height: 100%;
+  }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+  }
+
+  /* Mobile top bar -- desktop keeps the always-visible sidebar; below
+     900px the sidebar becomes an off-canvas drawer (opened via this bar's
+     Farms button) so the chat is the first thing a farmer sees on a
+     phone, not a full screen of sidebar content above the fold. */
+  .mobile-topbar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 16px;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    background: var(--brand);
+    color: var(--brand-ink);
+    position: sticky;
+    top: 0;
+    z-index: 40;
+  }
+
+  @media (max-width: 900px) {
+    .mobile-topbar { display: flex; }
+  }
+
+  .mobile-topbar .brand { gap: 8px; }
+  .mobile-topbar .brand-mark { width: 30px; height: 30px; font-size: 0.95rem; }
+  .mobile-topbar .brand-text h1 { font-size: 0.92rem; }
+  .mobile-topbar .brand-text p { display: none; }
+
+  #farms-drawer-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 13px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-family: "Inter", sans-serif;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 40px;
+  }
+  #farms-drawer-toggle:active { background: rgba(255, 255, 255, 0.2); }
+
+  .drawer-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 15, 12, 0.45);
+    z-index: 45;
+  }
+  .drawer-backdrop.open { display: block; }
+
+  .sidebar {
+    background: var(--brand);
+    color: var(--brand-ink);
+    padding: 22px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+
+  @media (max-width: 900px) {
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      height: 100%;
+      width: min(86vw, 340px);
+      z-index: 50;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease;
+      padding-top: calc(22px + env(safe-area-inset-top, 0px));
+      box-shadow: var(--shadow-lg);
+    }
+    .sidebar.open { transform: translateX(0); }
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.14);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.05rem;
+    flex-shrink: 0;
+  }
+
+  .brand-text h1 {
+    font-size: 1.02rem;
+    font-weight: 800;
+    margin: 0;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+
+  .brand-text p {
+    margin: 1px 0 0;
+    font-size: 0.72rem;
+    color: rgba(255, 255, 255, 0.6);
+    font-weight: 500;
+  }
+
+  .side-section-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.5);
+    margin: 0 0 10px;
+  }
+
+  /* Domain nav */
+
+  .nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  /* Nav rows are now a live status indicator, not a click target -- the
+     chat is single-threaded and routes itself (see route_message() in
+     farmer_server.py), so there's nothing to click here anymore. */
+  .nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.55);
+    text-align: left;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .nav-btn.active {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+  }
+
+  .nav-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+  .nav-btn.active .nav-icon { background: rgba(255, 255, 255, 0.22); opacity: 1; }
+
+  .nav-text { flex: 1; min-width: 0; }
+  .nav-title { font-size: 0.88rem; font-weight: 700; line-height: 1.25; }
+  .nav-sub { font-size: 0.72rem; color: rgba(255, 255, 255, 0.4); margin-top: 1px; }
+  .nav-btn.active .nav-sub { color: rgba(255, 255, 255, 0.55); }
+
+  .nav-btn.unavailable { opacity: 0.35; }
+
+  .nav-hint {
+    font-size: 0.72rem;
+    color: rgba(255, 255, 255, 0.4);
+    line-height: 1.5;
+    margin-top: 10px;
+    padding: 0 2px;
+  }
+
+  /* Farms list (sidebar) */
+
+  .farms-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .farm-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 11px;
+    border-radius: var(--radius-md);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    color: rgba(255, 255, 255, 0.78);
+    transition: background 0.12s ease;
+  }
+
+  .farm-row:hover { background: rgba(255, 255, 255, 0.08); }
+  .farm-row:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.6); outline-offset: 1px; }
+
+  .farm-row.active {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+  }
+
+  .farm-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    flex-shrink: 0;
+  }
+  .farm-row.active .farm-dot { background: #7fe0ab; }
+
+  .farm-info { flex: 1; min-width: 0; }
+  .farm-name {
+    font-size: 0.84rem;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .farm-location {
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.48);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .farms-empty {
+    font-size: 0.78rem;
+    color: rgba(255, 255, 255, 0.5);
+    line-height: 1.5;
+    padding: 2px 2px 4px;
+  }
+
+  .add-farm-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 11px;
+    border-radius: var(--radius-md);
+    border: 1px dashed rgba(255, 255, 255, 0.28);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-top: 4px;
+  }
+  .add-farm-toggle:hover { border-color: rgba(255, 255, 255, 0.5); color: #fff; }
+
+  .add-farm-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 6px;
+    padding: 11px;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  .add-farm-panel input {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+    font-family: "Inter", sans-serif;
+    font-size: 0.83rem;
+  }
+  .add-farm-panel input::placeholder { color: rgba(255, 255, 255, 0.4); }
+  .add-farm-panel input:focus { outline: none; border-color: rgba(255, 255, 255, 0.5); }
+
+  #add-farm-btn {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: none;
+    background: #fff;
+    color: var(--brand);
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 2px;
+  }
+  #add-farm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .sidebar-foot {
+    margin-top: auto;
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.4);
+    line-height: 1.5;
+  }
+
+  /* ---------- Main column ---------- */
+
+  .main {
+    padding: 24px 28px 32px;
+    max-width: 880px;
+    width: 100%;
+  }
+
+  @media (max-width: 640px) {
+    .main { padding: 18px 16px 24px; }
+  }
+
+  .topline {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  .topline h2 {
+    font-size: 1.28rem;
+    font-weight: 800;
+    margin: 0;
+    letter-spacing: -0.015em;
+  }
+
+  .topline .sub {
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    margin-top: 2px;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+    box-shadow: var(--shadow-sm);
+  }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+  /* Conditions strip */
+
+  .conditions-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  @media (max-width: 720px) {
+    .conditions-strip { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .cond-tile {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 13px 14px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .cond-tile .cond-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--ink-faint);
+    margin-bottom: 5px;
+  }
+
+  .cond-tile .cond-value {
+    font-size: 1.32rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .cond-tile .cond-value .unit {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-faint);
+    margin-left: 1px;
+  }
+
+  /* Conversation panel */
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .panel-head-left {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .panel-head-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    background: var(--accent-soft);
+  }
+
+  .panel-head h3 {
+    margin: 0;
+    font-size: 0.92rem;
+    font-weight: 700;
+  }
+
+  .capability-note {
+    font-size: 0.74rem;
+    color: var(--ink-faint);
+  }
+
+  .convo-empty {
+    color: var(--ink-soft);
+    text-align: center;
+    padding: 48px 20px;
+    font-size: 0.95rem;
+    line-height: 1.6;
+  }
+
+  .convo-empty .icon-row { font-size: 1.9rem; margin-bottom: 10px; }
+
+  .convo-log {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 52vh;
+    overflow-y: auto;
+    padding: 18px;
+  }
+
+  .bubble {
+    max-width: 82%;
+    padding: 11px 15px;
+    border-radius: var(--radius-md);
+    font-size: 0.94rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .bubble.you {
+    align-self: flex-end;
+    background: var(--brand);
+    color: var(--brand-ink);
+    border-bottom-right-radius: 4px;
+  }
+
+  .bubble.agent {
+    align-self: flex-start;
+    background: var(--surface-sunken);
+    color: var(--ink);
+    border-bottom-left-radius: 4px;
+    border-left: 3px solid var(--accent);
+  }
+
+  .bubble.agent.domain-weather { border-left-color: var(--weather); }
+  .bubble.agent.domain-crop { border-left-color: var(--accent); }
+  .bubble.agent.domain-plant { border-left-color: var(--plant); }
+
+  .bubble.error {
+    align-self: center;
+    background: var(--plant-soft);
+    color: var(--plant);
+    font-size: 0.86rem;
+    font-weight: 500;
+  }
+
+  .typing-hint {
+    align-self: flex-start;
+    color: var(--ink-faint);
+    font-size: 0.83rem;
+    font-style: italic;
+    padding: 2px 4px;
+  }
+
+  .redirect-notice {
+    align-self: center;
+    background: var(--weather-soft);
+    color: var(--weather);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 6px 13px;
+    border-radius: 999px;
+  }
+
+  .location-nudge {
+    align-self: flex-start;
+    background: var(--plant-soft);
+    color: var(--plant);
+    font-size: 0.84rem;
+    font-weight: 500;
+    padding: 9px 13px;
+    border-radius: var(--radius-md);
+    max-width: 85%;
+  }
+
+  .farm-picker {
+    align-self: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    padding: 2px 0;
+  }
+
+  .farm-pick-btn {
+    padding: 8px 15px;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-family: "Inter", sans-serif;
+    font-size: 0.86rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .farm-pick-btn:hover { background: var(--accent); color: #fff; }
+
+  /* Location row inside panel */
+
+  .location-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--weather-soft);
+    border-top: 1px solid var(--line);
+    padding: 10px 18px;
+  }
+
+  .location-row label {
+    font-size: 0.83rem;
+    font-weight: 700;
+    color: var(--weather);
+    white-space: nowrap;
+  }
+
+  .location-row input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    font-family: "Inter", sans-serif;
+    font-size: 0.9rem;
+    color: var(--ink);
+    min-width: 0;
+  }
+  .location-row input:focus { outline: none; }
+  .location-row input::placeholder { color: var(--ink-faint); }
+
+  .location-row.needs-attention {
+    box-shadow: inset 0 0 0 1px var(--plant);
+  }
+
+  /* Composer */
+
+  .composer {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    padding: 14px 18px 16px;
+    border-top: 1px solid var(--line);
+  }
+
+  #talk-box {
+    flex: 1;
+    min-height: 46px;
+    max-height: 140px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line-strong);
+    font-family: "Inter", sans-serif;
+    font-size: 0.94rem;
+    resize: none;
+    background: var(--surface-sunken);
+    color: var(--ink);
+  }
+
+  #talk-box:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+
+  #talk-box:disabled { opacity: 0.6; }
+  #talk-box::placeholder { color: var(--ink-faint); }
+
+  #send-btn {
+    flex-shrink: 0;
+    width: 46px;
+    height: 46px;
+    border-radius: var(--radius-md);
+    border: none;
+    background: var(--brand);
+    color: var(--brand-ink);
+    font-size: 1.15rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.12s ease;
+  }
+  #send-btn:hover:not(:disabled) { opacity: 0.88; }
+  #send-btn:disabled { background: var(--line-strong); color: var(--ink-faint); cursor: not-allowed; }
+  #send-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  #mic-btn {
+    flex-shrink: 0;
+    width: 46px;
+    height: 46px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    font-size: 1.05rem;
+    cursor: pointer;
+  }
+  #mic-btn:hover { background: var(--surface-sunken); }
+  #mic-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #mic-btn[hidden] { display: none; }
+
+  /* Crops row */
+
+  .crops-panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 16px 18px;
+  }
+
+  .crops-panel h3 {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--ink-faint);
+    margin: 0 0 10px;
+    font-weight: 700;
+  }
+
+  .crops-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .chip {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
+  .chip.muted { background: var(--surface-sunken); color: var(--ink-faint); font-weight: 500; }
+
+  /* iOS Safari auto-zooms the page on focusing any input/textarea under
+     16px font-size -- every text field on this page is set below that for
+     visual consistency with the rest of the UI, so force 16px specifically
+     on mobile widths where that zoom behavior actually triggers. */
+  @media (max-width: 900px) {
+    #talk-box,
+    .location-row input,
+    .add-farm-panel input,
+    .modal-input-row input {
+      font-size: 16px;
+    }
+  }
+
+  /* ---------- Location modal ---------- */
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 17, 0.5);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 100;
+  }
+
+  .modal-overlay[hidden] { display: none; }
+
+  .modal-card {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 26px 26px 22px;
+    max-width: 420px;
+    width: 100%;
+  }
+
+  .modal-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--weather-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    margin-bottom: 14px;
+  }
+
+  .modal-card h3 {
+    margin: 0 0 6px;
+    font-size: 1.1rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+
+  .modal-card p {
+    margin: 0 0 18px;
+    font-size: 0.88rem;
+    color: var(--ink-soft);
+    line-height: 1.55;
+  }
+
+  .modal-input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .modal-input-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 11px 13px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line-strong);
+    background: var(--surface-sunken);
+    font-family: "Inter", sans-serif;
+    font-size: 0.92rem;
+    color: var(--ink);
+  }
+  .modal-input-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+
+  #modal-use-btn {
+    flex-shrink: 0;
+    padding: 0 16px;
+    border-radius: var(--radius-md);
+    border: none;
+    background: var(--brand);
+    color: var(--brand-ink);
+    font-size: 0.88rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  #modal-use-btn:disabled { background: var(--line-strong); color: var(--ink-faint); cursor: not-allowed; }
+
+  .modal-detect-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--ink);
+    font-family: "Inter", sans-serif;
+    font-size: 0.87rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 14px;
+  }
+  .modal-detect-btn:hover { background: var(--surface-sunken); }
+  .modal-detect-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .modal-foot {
+    display: flex;
+    justify-content: center;
+  }
+
+  #modal-skip-btn {
+    border: none;
+    background: transparent;
+    color: var(--ink-faint);
+    font-family: "Inter", sans-serif;
+    font-size: 0.83rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 6px 8px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  #modal-skip-btn:hover { color: var(--ink-soft); }
+</style>
+</head>
+<body>
+
+<div class="mobile-topbar">
+  <div class="brand">
+    <div class="brand-mark">🌾</div>
+    <div class="brand-text">
+      <h1>Farm Assistant</h1>
+      <p>Weather · Crop · Plant health</p>
+    </div>
+  </div>
+  <button id="farms-drawer-toggle" type="button" aria-expanded="false" aria-controls="sidebar">
+    <span id="drawer-toggle-icon">🌾</span> Farms
+  </button>
+</div>
+
+<div class="drawer-backdrop" id="drawer-backdrop"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">🌾</div>
+      <div class="brand-text">
+        <h1>Farm Assistant</h1>
+        <p>Weather · Crop · Plant health</p>
+      </div>
+    </div>
+
+    <nav>
+      <div class="side-section-label">Assistants</div>
+      <div class="nav-list" id="nav-list">
+        <div class="nav-btn" data-domain="weather" id="btn-weather">
+          <span class="nav-icon">☁️</span>
+          <span class="nav-text">
+            <div class="nav-title">Weather</div>
+            <div class="nav-sub">Conditions &amp; forecast</div>
+          </span>
+        </div>
+        <div class="nav-btn" data-domain="crop" id="btn-crop">
+          <span class="nav-icon">🌱</span>
+          <span class="nav-text">
+            <div class="nav-title">Crop</div>
+            <div class="nav-sub">What to plant now</div>
+          </span>
+        </div>
+        <div class="nav-btn" data-domain="plant" id="btn-plant">
+          <span class="nav-icon">🩺</span>
+          <span class="nav-text">
+            <div class="nav-title">Plant Health</div>
+            <div class="nav-sub">Diagnose a symptom</div>
+          </span>
+        </div>
+      </div>
+      <div class="nav-hint">One chat — I'll automatically use the right assistant for each question.</div>
+    </nav>
+
+    <div>
+      <div class="side-section-label">Your farms</div>
+      <div class="farms-list" id="farms-list"></div>
+      <div class="farms-empty" id="farms-empty" hidden>No farms saved yet — one is added automatically the first time you give a location.</div>
+      <button class="add-farm-toggle" id="add-farm-toggle" type="button">+ Add a farm</button>
+      <div class="add-farm-panel" id="add-farm-panel" hidden>
+        <input id="new-farm-name" type="text" placeholder="Farm name, e.g. North field" />
+        <input id="new-farm-location" type="text" placeholder="Location, e.g. Colombo, LK" />
+        <button id="add-farm-btn" type="button">Add farm</button>
+      </div>
+    </div>
+
+    <div class="sidebar-foot">Answers use live weather data and deterministic agronomy rules — the model only phrases them.</div>
+  </aside>
+
+  <main class="main">
+    <div class="topline">
+      <div>
+        <h2 id="page-title">Farm Assistant</h2>
+        <div class="sub" id="page-sub">Ask anything — weather, what to plant, or a plant problem.</div>
+      </div>
+      <span class="status-pill" id="capability-pill"><span class="dot"></span><span id="capability-note">Ready</span></span>
+    </div>
+
+    <div class="conditions-strip" id="conditions-strip">
+      <div class="cond-tile">
+        <div class="cond-label">Location</div>
+        <div class="cond-value" id="sum-location" style="font-size:1.05rem;">—</div>
+      </div>
+      <div class="cond-tile">
+        <div class="cond-label">Temperature</div>
+        <div class="cond-value" id="sum-temp">—</div>
+      </div>
+      <div class="cond-tile">
+        <div class="cond-label">Humidity</div>
+        <div class="cond-value" id="sum-humidity">—</div>
+      </div>
+      <div class="cond-tile">
+        <div class="cond-label">Active farm</div>
+        <div class="cond-value" id="sum-farm" style="font-size:1.05rem;">—</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-head-left">
+          <span class="panel-head-icon" id="panel-icon">🌾</span>
+          <h3 id="panel-title">Chat</h3>
+        </div>
+      </div>
+
+      <div class="convo-empty" id="convo-empty">
+        <div class="icon-row">👋</div>
+        Ask about the weather, what to plant, or describe a plant problem — I'll bring in the right assistant automatically.
+      </div>
+      <div class="convo-log" id="convo-log" hidden></div>
+
+      <div class="location-row" id="location-row" hidden>
+        <label for="location-box">📍 Where's your farm?</label>
+        <input id="location-box" type="text" placeholder="City name, e.g. Colombo, LK" />
+      </div>
+
+      <div class="composer">
+        <textarea id="talk-box" placeholder="Ask about weather, crops, or a plant problem…" rows="1"></textarea>
+        <button id="mic-btn" title="Speak instead" hidden>🎤</button>
+        <button id="send-btn" title="Send">➤</button>
+      </div>
+    </div>
+
+    <div class="crops-panel">
+      <h3>Crops you're growing</h3>
+      <div class="crops-chips" id="sum-crops"><span class="chip muted">None set yet</span></div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-overlay" id="location-modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-icon">📍</div>
+    <h3 id="modal-title">Where's your farm?</h3>
+    <p>Weather answers are more accurate with a real location — without one, I'm just guessing at a default.</p>
+    <div class="modal-input-row">
+      <input id="modal-location-input" type="text" placeholder="City name, e.g. Colombo, LK" />
+      <button id="modal-use-btn" type="button">Use this</button>
+    </div>
+    <button class="modal-detect-btn" id="modal-detect-btn" type="button">📡 Detect my location automatically</button>
+    <div class="modal-foot">
+      <button id="modal-skip-btn" type="button">Skip for now, use a default location</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const state = {
+  // Which agent the chat is currently routed to -- purely a display
+  // concern client-side now; the SERVER decides routing per-message (see
+  // route_message() in farmer_server.py) and tells us via each reply's
+  // `domain` field. Starts matching the server's own default ("crop").
+  activeDomain: "crop",
+  capabilities: null,
+  // True once the location modal has been shown (answered or skipped) this
+  // page session -- see maybeShowLocationModal(). Reset on page reload, so
+  // returning without a saved location gets asked again.
+  locationPromptSeen: false,
+};
+
+const DOMAIN_META = {
+  weather: { icon: "☁️", title: "Weather" },
+  crop: { icon: "🌱", title: "Crop" },
+  plant: { icon: "🩺", title: "Plant Health" },
+};
+
+const els = {
+  navButtons: document.querySelectorAll(".nav-btn"),
+  convoEmpty: document.getElementById("convo-empty"),
+  convoLog: document.getElementById("convo-log"),
+  talkBox: document.getElementById("talk-box"),
+  sendBtn: document.getElementById("send-btn"),
+  micBtn: document.getElementById("mic-btn"),
+  capabilityNote: document.getElementById("capability-note"),
+  locationRow: document.getElementById("location-row"),
+  locationBox: document.getElementById("location-box"),
+  sumLocation: document.getElementById("sum-location"),
+  sumTemp: document.getElementById("sum-temp"),
+  sumHumidity: document.getElementById("sum-humidity"),
+  sumFarm: document.getElementById("sum-farm"),
+  sumCrops: document.getElementById("sum-crops"),
+  farmsList: document.getElementById("farms-list"),
+  farmsEmpty: document.getElementById("farms-empty"),
+  addFarmToggle: document.getElementById("add-farm-toggle"),
+  addFarmPanel: document.getElementById("add-farm-panel"),
+  newFarmName: document.getElementById("new-farm-name"),
+  newFarmLocation: document.getElementById("new-farm-location"),
+  addFarmBtn: document.getElementById("add-farm-btn"),
+  panelIcon: document.getElementById("panel-icon"),
+  panelTitle: document.getElementById("panel-title"),
+  locationModal: document.getElementById("location-modal"),
+  modalLocationInput: document.getElementById("modal-location-input"),
+  modalUseBtn: document.getElementById("modal-use-btn"),
+  modalDetectBtn: document.getElementById("modal-detect-btn"),
+  modalSkipBtn: document.getElementById("modal-skip-btn"),
+  sidebar: document.getElementById("sidebar"),
+  drawerBackdrop: document.getElementById("drawer-backdrop"),
+  drawerToggle: document.getElementById("farms-drawer-toggle"),
+};
+
+function openDrawer() {
+  els.sidebar.classList.add("open");
+  els.drawerBackdrop.classList.add("open");
+  els.drawerToggle.setAttribute("aria-expanded", "true");
+}
+
+function closeDrawer() {
+  els.sidebar.classList.remove("open");
+  els.drawerBackdrop.classList.remove("open");
+  els.drawerToggle.setAttribute("aria-expanded", "false");
+}
+
+els.drawerToggle.addEventListener("click", () => {
+  if (els.sidebar.classList.contains("open")) closeDrawer();
+  else openDrawer();
+});
+els.drawerBackdrop.addEventListener("click", closeDrawer);
+
+function addBubble(kind, domain, text) {
+  if (!els.convoLog.hidden === false) {
+    els.convoEmpty.hidden = true;
+    els.convoLog.hidden = false;
+  }
+  const div = document.createElement("div");
+  div.className = "bubble " + kind + (domain ? ` domain-${domain}` : "");
+  div.textContent = text;
+  els.convoLog.appendChild(div);
+  els.convoLog.scrollTop = els.convoLog.scrollHeight;
+}
+
+// Updates the sidebar's "currently active" highlight and the panel header
+// to reflect which agent just answered -- purely reactive to what the
+// server's /chat response reports, never something the farmer clicks.
+function setActiveDomain(domain) {
+  const changed = domain !== state.activeDomain;
+  state.activeDomain = domain;
+  els.navButtons.forEach((b) => b.classList.toggle("active", b.dataset.domain === domain));
+
+  const meta = DOMAIN_META[domain];
+  if (meta) {
+    els.panelIcon.textContent = meta.icon;
+    els.panelTitle.textContent = meta.title;
+  }
+
+  // Location only matters to the Weather agent -- WeatherAgent.handle()
+  // falls back to farm_state's last-known location (or the server's
+  // configured default) when this is left blank, so showing/hiding this
+  // row per domain rather than always-on keeps Crop/Plant uncluttered.
+  els.locationRow.hidden = domain !== "weather";
+  if (changed && domain === "weather" && !els.locationBox.value.trim()) {
+    autoDetectLocation();
+    maybeShowLocationModal();
+  }
+}
+
+// A blocking prompt rather than the old easy-to-miss inline banner -- a
+// farmer consistently skipped past the banner and never noticed their
+// weather answers were using a guessed default. Shown once per page
+// session (state.locationPromptSeen) the first time Weather is opened
+// with no location known yet; also re-shown reactively if the SERVER
+// still reports needs_location after a reply (belt-and-braces in case the
+// farmer switched domains before this ever fired). "Skip for now" records
+// the choice for this session only -- it does not fake a confirmed
+// location, so the next fresh browser session asks again.
+function maybeShowLocationModal() {
+  if (state.locationPromptSeen) return;
+  if (els.locationBox.value.trim()) return;
+  showLocationModal();
+}
+
+function showLocationModal() {
+  state.locationPromptSeen = true;
+  els.modalLocationInput.value = "";
+  els.locationModal.hidden = false;
+  setTimeout(() => els.modalLocationInput.focus(), 50);
+}
+
+function hideLocationModal() {
+  els.locationModal.hidden = true;
+}
+
+function applyLocation(loc) {
+  els.locationBox.value = loc;
+  try { localStorage.setItem("farmLocation", loc); } catch (e) { /* private mode etc -- fine to skip */ }
+  els.locationRow.classList.remove("needs-attention");
+  hideLocationModal();
+}
+
+// Fills the location box automatically so most farmers never have to type
+// a city by hand -- GPS first (accurate to the actual farm, needs a
+// one-time browser permission prompt), falling back to IP-based
+// geolocation (coarser, silent, no prompt) if GPS is denied or
+// unsupported. Either way this only pre-fills the box; the location isn't
+// treated as "confirmed" until the farmer actually sends a question with
+// it in place (see sendMessage(), which is what marks farm_state's
+// location_confirmed) -- so a wrong auto-detected city is still visible
+// and editable before it's ever acted on.
+function autoDetectLocation() {
+  const applyResolved = async (lat, lon) => {
+    try {
+      const resp = await fetch("/resolve_location", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(lat != null ? { lat, lon } : {}),
+      });
+      const data = await resp.json();
+      if (data.location && !els.locationBox.value.trim()) {
+        els.locationBox.value = data.location;
+        els.locationBox.placeholder = "City name, e.g. Colombo, LK";
+      }
+    } catch (e) { /* auto-detect is best-effort -- farmer can still type one in */ }
+  };
+
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => applyResolved(pos.coords.latitude, pos.coords.longitude),
+      () => applyResolved(null, null),  // denied/unavailable -- fall back to IP lookup
+      { timeout: 5000 }
+    );
+  } else {
+    applyResolved(null, null);
+  }
+}
+
+async function sendMessage(overrideText, farmName) {
+  const text = overrideText != null ? overrideText : els.talkBox.value.trim();
+  if (!text || !state.activeDomain) return;
+
+  if (overrideText == null) {
+    addBubble("you", null, text);
+    els.talkBox.value = "";
+  }
+  els.sendBtn.disabled = true;
+
+  const hint = document.createElement("div");
+  hint.className = "typing-hint";
+  hint.textContent = "thinking…";
+  els.convoLog.appendChild(hint);
+  els.convoLog.scrollTop = els.convoLog.scrollHeight;
+
+  // Location is only ever meaningful to a weather-routed question, but the
+  // farmer doesn't pick the domain anymore -- send it whenever the box has
+  // a value and let the server ignore it for non-weather replies.
+  const payload = { text };
+  const loc = els.locationBox.value.trim();
+  if (loc) {
+    payload.location = loc;
+    try { localStorage.setItem("farmLocation", loc); } catch (e) { /* private mode etc -- fine to skip */ }
+  }
+  if (farmName) payload.farm_name = farmName;
+
+  try {
+    const resp = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    hint.remove();
+
+    if (data.switched) {
+      const notice = document.createElement("div");
+      notice.className = "redirect-notice";
+      notice.textContent = `↪ Switched to ${domainLabel(data.domain)}`;
+      els.convoLog.appendChild(notice);
+    }
+    setActiveDomain(data.domain);
+
+    if (data.ambiguous_farms && data.ambiguous_farms.length > 0) {
+      // Don't show this as a normal agent reply -- offer a picker instead,
+      // and re-send the SAME question with farm_name set once tapped, so
+      // the farmer never has to retype anything.
+      const picker = document.createElement("div");
+      picker.className = "farm-picker";
+      const label = document.createElement("div");
+      label.className = "location-nudge";
+      label.textContent = "🌾 Which farm is this about?";
+      els.convoLog.appendChild(label);
+      for (const name of data.ambiguous_farms) {
+        const btn = document.createElement("button");
+        btn.className = "farm-pick-btn";
+        btn.textContent = name;
+        btn.addEventListener("click", () => sendMessage(text, name));
+        picker.appendChild(btn);
+      }
+      els.convoLog.appendChild(picker);
+      els.convoLog.scrollTop = els.convoLog.scrollHeight;
+      els.sendBtn.disabled = false;
+      els.talkBox.focus();
+      return;
+    }
+
+    addBubble("agent", data.domain, data.response);
+    renderFarmState(data.farm_state);
+
+    if (data.needs_location) {
+      els.locationRow.hidden = false;
+      els.locationRow.classList.add("needs-attention");
+      const nudge = document.createElement("div");
+      nudge.className = "location-nudge";
+      nudge.textContent = "📍 I'm using a default location — tell me where your farm is for accurate weather.";
+      els.convoLog.appendChild(nudge);
+      // Belt-and-braces: the proactive modal (maybeShowLocationModal, fired
+      // when Weather is first opened) should normally have already caught
+      // this, but if the server still reports no confirmed location after
+      // a reply, ask again rather than leaving it to the easy-to-miss
+      // inline banner alone.
+      if (!state.locationPromptSeen) showLocationModal();
+    } else {
+      els.locationRow.classList.remove("needs-attention");
+    }
+
+    els.convoLog.scrollTop = els.convoLog.scrollHeight;
+  } catch (err) {
+    hint.remove();
+    addBubble("error", null, "Couldn't reach the assistant. Check your connection and try again.");
+  }
+
+  els.sendBtn.disabled = false;
+  els.talkBox.focus();
+}
+
+function domainLabel(domain) {
+  return domain === "weather" ? "Weather" : domain === "crop" ? "Crop" : "Plant Health";
+}
+
+function renderFarmState(fs) {
+  const farms = fs.farms || [];
+  const activeIdx = fs.active_farm_index;
+  const active = (activeIdx != null && farms[activeIdx]) ? farms[activeIdx] : null;
+
+  els.sumLocation.textContent = active ? (active.location || "—") : "—";
+  els.sumFarm.textContent = active ? active.name : "—";
+  const w = active ? (active.current_weather || {}) : {};
+  els.sumTemp.innerHTML = w.temp_c != null ? `${w.temp_c}<span class="unit">°C</span>` : "—";
+  els.sumHumidity.innerHTML = w.humidity_pct != null ? `${w.humidity_pct}<span class="unit">%</span>` : "—";
+
+  const crops = active ? (active.crops_grown || []) : [];
+  els.sumCrops.innerHTML = "";
+  if (crops.length === 0) {
+    els.sumCrops.innerHTML = '<span class="chip muted">None set yet</span>';
+  } else {
+    for (const c of crops) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = c;
+      els.sumCrops.appendChild(chip);
+    }
+  }
+
+  renderFarmsList(farms, activeIdx);
+}
+
+// Renders the sidebar farm list -- clicking a row selects that farm
+// (POST /farms/{index}/select) so the next question uses it without
+// needing to retype a location or answer a disambiguation prompt.
+function renderFarmsList(farms, activeIdx) {
+  els.farmsList.innerHTML = "";
+  els.farmsEmpty.hidden = farms.length > 0;
+
+  farms.forEach((farm, i) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "farm-row" + (i === activeIdx ? " active" : "");
+    row.innerHTML = `
+      <span class="farm-dot"></span>
+      <span class="farm-info">
+        <div class="farm-name">${escapeHtml(farm.name)}</div>
+        <div class="farm-location">${farm.location ? escapeHtml(farm.location) : "No location set"}</div>
+      </span>
+    `;
+    row.addEventListener("click", () => selectFarm(i));
+    els.farmsList.appendChild(row);
+  });
+}
+
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function selectFarm(index) {
+  try {
+    await fetch(`/farms/${index}/select`, { method: "POST" });
+    await loadFarmState();
+  } catch (e) { /* best-effort -- farm list will just retry on next render */ }
+  closeDrawer();
+  els.talkBox.focus();
+}
+
+async function addFarm() {
+  const name = els.newFarmName.value.trim();
+  const location = els.newFarmLocation.value.trim();
+  if (!name) {
+    els.newFarmName.focus();
+    return;
+  }
+  els.addFarmBtn.disabled = true;
+  try {
+    await fetch("/farms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, location: location || null }),
+    });
+    els.newFarmName.value = "";
+    els.newFarmLocation.value = "";
+    els.addFarmPanel.hidden = true;
+    await loadFarmState();
+  } catch (e) {
+    addBubble("error", null, "Couldn't add that farm. Check your connection and try again.");
+  }
+  els.addFarmBtn.disabled = false;
+}
+
+async function loadCapabilities() {
+  try {
+    const resp = await fetch("/capabilities");
+    state.capabilities = await resp.json();
+  } catch (err) {
+    state.capabilities = { mic_available: false, phrasing_available: false, domains_available: {} };
+  }
+
+  els.navButtons.forEach((btn) => {
+    const domain = btn.dataset.domain;
+    if (state.capabilities.domains_available[domain] === false) {
+      btn.classList.add("unavailable");
+      btn.querySelector(".nav-sub").textContent = "Not set up yet";
+    }
+  });
+
+  if (state.capabilities.mic_available) {
+    els.micBtn.hidden = false;
+  }
+
+  els.capabilityNote.textContent = state.capabilities.phrasing_available ? "Ready" : "Plain-text mode";
+}
+
+async function loadFarmState() {
+  try {
+    const resp = await fetch("/farm_state");
+    renderFarmState(await resp.json());
+  } catch (err) {
+    /* leave placeholders */
+  }
+}
+
+els.sendBtn.addEventListener("click", sendMessage);
+els.talkBox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+els.talkBox.addEventListener("input", () => {
+  els.talkBox.style.height = "auto";
+  els.talkBox.style.height = Math.min(els.talkBox.scrollHeight, 140) + "px";
+});
+
+els.micBtn.addEventListener("click", () => {
+  addBubble("error", null, "Voice input is being wired up — type your question for now.");
+});
+
+els.addFarmToggle.addEventListener("click", () => {
+  els.addFarmPanel.hidden = !els.addFarmPanel.hidden;
+  if (!els.addFarmPanel.hidden) els.newFarmName.focus();
+});
+els.addFarmBtn.addEventListener("click", addFarm);
+els.newFarmLocation.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); addFarm(); }
+});
+
+els.modalUseBtn.addEventListener("click", () => {
+  const loc = els.modalLocationInput.value.trim();
+  if (!loc) {
+    els.modalLocationInput.focus();
+    return;
+  }
+  applyLocation(loc);
+});
+els.modalLocationInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); els.modalUseBtn.click(); }
+});
+els.modalDetectBtn.addEventListener("click", () => {
+  els.modalDetectBtn.disabled = true;
+  els.modalDetectBtn.textContent = "Detecting…";
+  const restore = () => {
+    els.modalDetectBtn.disabled = false;
+    els.modalDetectBtn.textContent = "📡 Detect my location automatically";
+  };
+  const applyResolved = async (lat, lon) => {
+    try {
+      const resp = await fetch("/resolve_location", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(lat != null ? { lat, lon } : {}),
+      });
+      const data = await resp.json();
+      if (data.location) {
+        els.modalLocationInput.value = data.location;
+      } else {
+        els.modalLocationInput.placeholder = "Couldn't detect it — type your city";
+      }
+    } catch (e) {
+      els.modalLocationInput.placeholder = "Couldn't detect it — type your city";
+    }
+    restore();
+  };
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => applyResolved(pos.coords.latitude, pos.coords.longitude),
+      () => applyResolved(null, null),
+      { timeout: 5000 }
+    );
+  } else {
+    applyResolved(null, null);
+  }
+});
+els.modalSkipBtn.addEventListener("click", () => {
+  hideLocationModal();
+});
+
+try {
+  const savedLocation = localStorage.getItem("farmLocation");
+  if (savedLocation) {
+    els.locationBox.value = savedLocation;
+    state.locationPromptSeen = true;
+  }
+} catch (e) { /* private mode etc -- fine to skip */ }
+
+setActiveDomain("crop");
+els.talkBox.focus();
+loadCapabilities();
+loadFarmState();
+</script>
+
+</body>
+</html>

@@ -1,9 +1,9 @@
 """Farmer-facing dashboard server: one chat, three agents underneath.
 
 Separate from dashboard_server.py (the technical/judge-facing view over
-VoiceAgentLoop's continuous mic + wakeword pipeline, which keeps its three
-separate "Hey Weather/Hey Crop/Hey Plant" wakewords -- that three-wakeword
-routing is the hackathon brief's core demo claim and is left untouched).
+VoiceAgentLoop's continuous mic + wakeword pipeline, which uses its own
+"Hey Green"/"Hey Doc" wakewords -- see wakeword/router.py -- and is left
+untouched by this file's own single-chat routing).
 
 This server used to make the farmer click a Weather/Crop/Plant button
 before every question (mirroring the wakeword concept in click form). In
@@ -56,6 +56,7 @@ from pathlib import Path
 import requests
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config
@@ -67,6 +68,7 @@ from .farm_state import FarmProfile, FarmState
 from .intent import detect_domain
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+WAKEWORD_MODELS_DIR = config.WAKEWORD_MODELS_DIR
 
 DOMAIN_AGENTS = {
     "weather": WeatherAgent,
@@ -79,6 +81,17 @@ DOMAIN_AGENTS = {
 MULTI_TURN_DOMAINS = {"plant"}
 
 app = FastAPI(title="Farmer Dashboard")
+
+# Serves whatever .onnx wakeword models actually exist (dropped in by the
+# user, see wakeword/router.py's module docstring -- this project has no
+# training pipeline of its own) to the browser for client-side detection
+# via onnxruntime-web. The directory is created empty at project scaffold
+# time (only a .gitkeep) so this mount never 404s the whole app even
+# before any model file is provided -- individual file requests 404
+# normally until their .onnx actually exists, which /capabilities'
+# wakeword_models field lets the frontend check for up front.
+WAKEWORD_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/wakeword-models", StaticFiles(directory=str(WAKEWORD_MODELS_DIR)), name="wakeword-models")
 
 # Single-chat routing: which domain the last message was routed to, so a
 # message whose wording doesn't clearly point anywhere (see route_message)
@@ -244,15 +257,47 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "farmer.html")
 
 
+@app.get("/wakeword-test")
+async def wakeword_test() -> FileResponse:
+    """Standalone wakeword-detection test page -- no chat, no ASR, no API
+    keys needed. Exists specifically to test the client-side openWakeWord
+    pipeline in isolation (does saying "Hey Green" out loud actually cross
+    the 0.2 threshold) without ASSEMBLYAI_API_KEY gating the farmer
+    dashboard's own wake-toggle button. See static/wakeword_test.html."""
+    return FileResponse(STATIC_DIR / "wakeword_test.html")
+
+
 @app.get("/capabilities")
 async def capabilities() -> dict:
     """Tells the frontend what's actually usable right now, so it can show
     the mic button only when a real voice round-trip is possible instead
-    of offering a control that would just fail."""
+    of offering a control that would just fail.
+
+    `wakeword_models` reports which wakewords have a COMPLETE, runnable
+    detection chain -- not just their own classifier .onnx but also the
+    two shared openWakeWord feature-extraction models (melspectrogram.onnx,
+    embedding_model.onnx) every classifier depends on (see farmer.html's
+    voice module: raw audio -> melspectrogram -> embedding -> classifier,
+    each a separate .onnx file). A classifier file alone can't detect
+    anything -- its input is a stack of 16 embeddings, not raw audio -- so
+    reporting true without the shared models present would let the
+    frontend start a wakeword loop that can never actually fire. All three
+    files are served to the browser at /wakeword-models/<name>.onnx via
+    the StaticFiles mount below. Wakeword listening additionally needs
+    mic_available (ASSEMBLYAI_API_KEY) since detecting the wakeword is only
+    useful if the follow-up speech can then actually be transcribed.
+    """
+    shared_models_present = (WAKEWORD_MODELS_DIR / "melspectrogram.onnx").exists() and (
+        WAKEWORD_MODELS_DIR / "embedding_model.onnx"
+    ).exists()
     return {
         "mic_available": bool(config.ASSEMBLYAI_API_KEY),
         "phrasing_available": bool(config.GEMINI_API_KEY),
         "domains_available": {name: name in _agents for name in DOMAIN_AGENTS},
+        "wakeword_models": {
+            name: shared_models_present and (WAKEWORD_MODELS_DIR / f"{name}.onnx").exists()
+            for name in ("field", "plant")
+        },
     }
 
 
@@ -308,6 +353,32 @@ async def select_farm(index: int) -> FarmOut:
     _farm_state.save(config.FARM_STATE_PATH)
     f = _farm_state.farms[index]
     return FarmOut(index=index, name=f.name, location=f.location, location_confirmed=f.location_confirmed, active=True)
+
+
+class UpdateFarmIn(BaseModel):
+    name: str | None = None
+    location: str | None = None
+
+
+@app.patch("/farms/{index}", response_model=FarmOut)
+async def update_farm(index: int, body: UpdateFarmIn) -> FarmOut:
+    """Rename a farm and/or change its saved location after it's already
+    been added -- separate from POST /farms (creates a new one) and
+    POST /farms/{index}/select (switches which is active). Either field
+    may be omitted to leave it unchanged."""
+    if not (0 <= index < len(_farm_state.farms)):
+        raise ValueError(f"No farm at index {index}")
+    f = _farm_state.farms[index]
+    if body.name is not None:
+        name = body.name.strip()
+        if name:
+            f.name = name
+    if body.location is not None:
+        location = body.location.strip()
+        f.location = location
+        f.location_confirmed = bool(location)
+    _farm_state.save(config.FARM_STATE_PATH)
+    return FarmOut(index=index, name=f.name, location=f.location, location_confirmed=f.location_confirmed, active=(index == _farm_state.active_farm_index))
 
 
 class ResolveLocationIn(BaseModel):
@@ -422,6 +493,8 @@ async def chat(body: ChatIn) -> ChatOut:
     except Exception as exc:  # noqa: BLE001 -- surface the failure to the farmer, don't crash the server
         response = f"Something went wrong handling that: {exc}"
 
+    farm.add_chat_turn(domain=domain, role="farmer", text=body.text)
+    farm.add_chat_turn(domain=domain, role="agent", text=response)
     _farm_state.save(config.FARM_STATE_PATH)
     done = _domain_conversation_done(domain) if domain in MULTI_TURN_DOMAINS else True
 
@@ -457,11 +530,23 @@ async def voice_session(websocket: WebSocket) -> None:
 
     try:
         asr = StreamingASR(on_final_transcript=on_final_transcript)
-        asr.connect()
+        # StreamingASR.connect() is a BLOCKING call -- it only returns once
+        # AssemblyAI's websocket handshake actually succeeds, which includes
+        # an internal SDK retry after an initial SSL handshake timeout
+        # (~4.6-4.8s observed on this machine, reproducible every time, see
+        # docs/build_log.md). Run it in a thread so this coroutine doesn't
+        # block the event loop, and explicitly signal "ready" to the browser
+        # only once it returns -- the browser must not start streaming PCM
+        # before this, or the first several seconds of the farmer's speech
+        # never reach AssemblyAI (this was the root cause of transcripts
+        # like "what is the weather" coming back as garbled fragments).
+        await loop.run_in_executor(None, asr.connect)
     except Exception as exc:  # noqa: BLE001 -- report connection failure, don't crash the endpoint
         await websocket.send_json({"type": "error", "message": f"Could not start voice session: {exc}"})
         await websocket.close()
         return
+
+    await websocket.send_json({"type": "ready"})
 
     try:
         while True:
@@ -506,16 +591,21 @@ async def _handle_voice_transcript(websocket: WebSocket, transcript: str) -> Non
     else:
         farm, _, _ = resolve_active_farm(None, None)
 
+    needs_location = False
+
     try:
         if domain in MULTI_TURN_DOMAINS:
             response = agent.handle(farm, transcript)
         elif domain == "weather":
             response = agent.handle(farm, question=transcript)
+            needs_location = not farm.location_confirmed
         else:
             response = agent.handle(farm)
     except Exception as exc:  # noqa: BLE001
         response = f"Something went wrong handling that: {exc}"
 
+    farm.add_chat_turn(domain=domain, role="farmer", text=transcript)
+    farm.add_chat_turn(domain=domain, role="agent", text=response)
     _farm_state.save(config.FARM_STATE_PATH)
     done = _domain_conversation_done(domain) if domain in MULTI_TURN_DOMAINS else True
 
@@ -528,6 +618,7 @@ async def _handle_voice_transcript(websocket: WebSocket, transcript: str) -> Non
             "done": done,
             "farm_state": _farm_state.to_dict(),
             "switched": switched,
+            "needs_location": needs_location,
         }
     )
 

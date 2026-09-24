@@ -1,4 +1,4 @@
-"""Plant disease diagnostic conversation agent ("Hey Plant").
+"""Plant disease diagnostic conversation agent ("Hey Doc").
 
 Voice-only, multi-turn diagnosis: the farmer describes a symptom, the
 agent asks 1-2 targeted follow-up questions to narrow the cause, then
@@ -49,7 +49,7 @@ Weather" has run at least once in the conversation.
 
 This is a PlantSession: one instance per diagnostic conversation, holding
 just enough state to ask up to two follow-up questions before summarizing.
-main.py is responsible for creating one when a "Hey Plant" wakeword fires
+main.py is responsible for creating one when a "Hey Doc" wakeword fires
 and feeding it each ASR transcript in turn until it reports done.
 """
 
@@ -266,7 +266,7 @@ def get_control_for_region(disease: NamedDisease, country_code: str) -> list[Reg
 
 @dataclass
 class PlantSession:
-    """Holds state across one multi-turn "Hey Plant" conversation."""
+    """Holds state across one multi-turn "Hey Doc" conversation."""
 
     crop: str | None = None
     initial_symptom_text: str = ""
@@ -412,13 +412,13 @@ class PlantSession:
         deterministic_summary = "\n".join(summary_lines)
 
         prompt = (
-            "You are an agronomist advisor speaking to a farmer over voice, concluding "
-            "a diagnostic conversation about a plant health problem. Based ONLY on the "
-            "deterministic assessment below, give a short spoken diagnosis (3-5 sentences): "
-            "state the most likely cause first, mention the current weather's role if "
-            "relevant, and give one practical next step. Do not invent facts beyond what's "
-            "given. If a caveat about a possible nonliving cause is present, mention it "
-            "clearly rather than glossing over it.\n\n"
+            "Conclude this plant-health diagnosis with a 3-5 sentence spoken answer, "
+            "based only on the assessment below: state the most likely cause first, "
+            "mention the current weather's role if relevant, and give one practical "
+            "next step. If a caveat about a possible nonliving cause is present, "
+            "mention it clearly rather than glossing over it.\n\n"
+            f"Farm context:\n{self._farm.to_prompt_context() if self._farm is not None else 'unknown'}\n\n"
+            f"{self._farm.recent_chat_context('plant') if self._farm is not None else ''}\n\n"
             f"Initial symptom described: {self.initial_symptom_text}\n\n"
             f"Assessment:\n{deterministic_summary}"
         )

@@ -1,14 +1,16 @@
 """Main orchestration loop: wakeword -> ASR -> domain routing -> response.
 
-Two wakewords, not three: "Hey Field" covers both Weather and Crop, "Hey
-Plant" stays separate (see wakeword/router.py's module docstring for why).
-"field" is a WAKEWORD name, not an agent -- there is no FieldAgent. Once
-"Hey Field" fires and ASR returns a transcript, `_resolve_wakeword_domain()`
-uses intent.py's deterministic keyword routing (the same mechanism the
-farmer dashboard's single chat uses) to decide weather vs crop BEFORE any
-agent.handle() call -- so `self.active_domain` briefly holds "field" only
-while listening, and is rewritten to "weather" or "crop" the moment speech
-comes back.
+Two wakewords, not three: "Hey Green" covers both Weather and Crop, "Hey
+Doc" stays separate (see wakeword/router.py's module docstring for why).
+"field" is the internal WAKEWORD/domain-key name, not an agent or the
+spoken phrase -- there is no FieldAgent, and the phrase itself has changed
+twice ("Hey Field" then "Hey Green") while this internal name stayed
+stable. Once "Hey Green" fires and ASR returns a transcript,
+`_resolve_wakeword_domain()` uses intent.py's deterministic keyword
+routing (the same mechanism the farmer dashboard's single chat uses) to
+decide weather vs crop BEFORE any agent.handle() call -- so
+`self.active_domain` briefly holds "field" only while listening, and is
+rewritten to "weather" or "crop" the moment speech comes back.
 
 State machine per audio frame:
   IDLE    -- every frame is scored by the wakeword router. A detection

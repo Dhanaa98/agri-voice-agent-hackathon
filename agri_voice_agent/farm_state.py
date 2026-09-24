@@ -28,6 +28,21 @@ class SymptomReport:
 
 
 @dataclass
+class ChatTurn:
+    """One side of one exchange -- a farmer's message or an agent's reply.
+    Persisted as a flat, growing list per farm (see FarmProfile.chat_history),
+    not scoped to any one session -- recent_chat_context() below is what
+    turns this into "memory": it doesn't matter whether the last few turns
+    for a domain happened a minute ago or a week ago, they're recalled the
+    same way either time."""
+
+    domain: str
+    role: str  # "farmer" | "agent"
+    text: str
+    timestamp: str
+
+
+@dataclass
 class WeatherSnapshot:
     temp_c: float | None = None
     humidity_pct: float | None = None
@@ -65,6 +80,10 @@ class FarmProfile:
     crops_grown: list[str] = field(default_factory=list)
     recent_symptoms_reported: list[SymptomReport] = field(default_factory=list)
     regional_disease_notes: list[str] = field(default_factory=list)
+    # Full raw transcript, per farm, across every session -- see ChatTurn's
+    # docstring. Capped on append (see add_chat_turn) so a long-lived farm
+    # profile can't grow this file without bound.
+    chat_history: list[ChatTurn] = field(default_factory=list)
 
     def add_symptom_report(self, crop: str, symptoms: str, diagnosis: str | None = None) -> None:
         self.recent_symptoms_reported.append(
@@ -75,6 +94,38 @@ class FarmProfile:
                 diagnosis=diagnosis,
             )
         )
+
+    # Cap on chat_history length -- generous for a hackathon/demo lifetime
+    # (roughly 100 exchanges per farm) while keeping the on-disk FarmState
+    # JSON from growing unbounded. Full raw transcript was an explicit
+    # choice over summarization, so trimming the oldest turns (rather than
+    # compacting them) is the only growth control here.
+    MAX_CHAT_HISTORY = 200
+
+    def add_chat_turn(self, domain: str, role: str, text: str) -> None:
+        self.chat_history.append(
+            ChatTurn(
+                domain=domain,
+                role=role,
+                text=text,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        if len(self.chat_history) > self.MAX_CHAT_HISTORY:
+            self.chat_history = self.chat_history[-self.MAX_CHAT_HISTORY :]
+
+    def recent_chat_context(self, domain: str, limit: int = 6) -> str:
+        """Compact natural-language block of the last `limit` chat turns for
+        one domain on this farm, for splicing into an LLM prompt alongside
+        to_prompt_context(). Flat string, matching llm_client.generate()'s
+        single-prompt-string API -- no message-list/session object. Serves
+        both within-session and cross-session recall identically, since
+        chat_history has no session-boundary tracking (see ChatTurn)."""
+        turns = [t for t in self.chat_history if t.domain == domain][-limit:]
+        if not turns:
+            return ""
+        lines = [f"  {t.role}: {t.text}" for t in turns]
+        return "Recent conversation in this section:\n" + "\n".join(lines)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -110,6 +161,7 @@ class FarmProfile:
     def _from_dict(cls, data: dict) -> "FarmProfile":
         weather = WeatherSnapshot(**data.get("current_weather", {}))
         symptoms = [SymptomReport(**s) for s in data.get("recent_symptoms_reported", [])]
+        chat_history = [ChatTurn(**c) for c in data.get("chat_history", [])]
         return cls(
             name=data.get("name", "Farm 1"),
             location=data.get("location", ""),
@@ -119,6 +171,7 @@ class FarmProfile:
             crops_grown=data.get("crops_grown", []),
             recent_symptoms_reported=symptoms,
             regional_disease_notes=data.get("regional_disease_notes", []),
+            chat_history=chat_history,
         )
 
 

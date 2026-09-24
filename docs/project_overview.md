@@ -5,9 +5,11 @@ Hackathon on lablab.ai (Sep 1-30 2026, $10k prize pool: $5k cash + $5k AssemblyA
 credits). Full spec lives in AGRI_VOICE_AGENT_BRIEF.md at the project root
 (D:\Dhananjaya\Voice project 2).
 
-Three wakewords ("Hey Weather", "Hey Crop", "Hey Plant") route to domain agents
+Two wakewords ("Hey Green" for Weather+Crop, "Hey Doc" for Plant Health --
+originally three separate wakewords including "Hey Weather"/"Hey Crop"/"Hey Plant",
+merged/renamed as the project evolved, see docs/build_log.md) route to domain agents
 sharing one `farm_state` object, so answers cross-reference each other (e.g. weather
-context shifts disease diagnosis). "Hey Plant" is voice-only conversational disease
+context shifts disease diagnosis). "Hey Doc" is voice-only conversational disease
 diagnosis (no photo) — the primary differentiator, gets the most build time.
 
 **Why:** Builder has real wakeword-model/ML experience (not just API integration)

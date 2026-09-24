@@ -4,5 +4,9 @@ __pycache__/
 .venv/
 venv/
 *.onnx
-!agri_voice_agent/wakeword/models/.gitkeep
+!agri_voice_agent/wakeword/models/*.onnx
 agri_voice_agent/farm_state.json
+agri_voice_agent/real_negative_raw/
+agri_voice_agent/real_positive_raw/
+server_stdout.log
+server_stderr.log

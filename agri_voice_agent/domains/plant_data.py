@@ -1,4 +1,4 @@
-"""Plant disease knowledge base for the "Hey Plant" diagnostic conversation.
+"""Plant disease knowledge base for the "Hey Doc" diagnostic conversation.
 
 Two layers, per the project's decided approach (see build log):
 
@@ -48,7 +48,7 @@ Two layers, per the project's decided approach (see build log):
       flagged as too thin (e.g. "no expanded write-up reached in this
       extraction pass", name-only mentions) were skipped; everything else
       was converted. This is why NAMED_DISEASES has 43 crop keys and 160+
-      entries even though "Hey Plant"'s live demo/original brief only
+      entries even though "Hey Doc"'s live demo/original brief only
       ever validated 5 -- the newly added crops have no corresponding
       crop_data.py/CROPS entry, so plant.py's crop-name matching and
       CROPS-keys-based fallback message (see PlantSession.start) do not

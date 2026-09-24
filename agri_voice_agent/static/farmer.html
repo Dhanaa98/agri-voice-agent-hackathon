@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js"></script>
 <style>
   :root {
     --bg: #f6f7f5;
@@ -209,6 +210,26 @@
     gap: 10px;
   }
 
+  /* Sidebar's brand block doubles as the "General" (combined) view's nav
+     entry point -- clicking it is equivalent to what a "General" nav-btn
+     used to do. The mobile-topbar .brand copy stays purely decorative. */
+  .sidebar .brand {
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+    border-radius: var(--radius-md);
+    padding: 6px;
+    margin: -6px -6px 0;
+    transition: background 0.15s ease;
+    font-family: inherit;
+  }
+  .sidebar .brand:hover { background: rgba(255, 255, 255, 0.08); }
+  .sidebar .brand:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.6); outline-offset: 1px; }
+  .sidebar .brand.active { background: rgba(255, 255, 255, 0.14); }
+  .sidebar .brand.active .brand-mark { background: rgba(255, 255, 255, 0.22); }
+
   .brand-mark {
     width: 34px;
     height: 34px;
@@ -230,10 +251,11 @@
   }
 
   .brand-text p {
-    margin: 1px 0 0;
+    margin: 2px 0 0;
     font-size: 0.72rem;
     color: rgba(255, 255, 255, 0.6);
     font-weight: 500;
+    line-height: 1.4;
   }
 
   .side-section-label {
@@ -253,9 +275,12 @@
     gap: 4px;
   }
 
-  /* Nav rows are now a live status indicator, not a click target -- the
-     chat is single-threaded and routes itself (see route_message() in
-     farmer_server.py), so there's nothing to click here anymore. */
+  /* Nav rows pick which VIEW the main panel shows (General, or one
+     domain's filed history) -- they don't control routing, which is
+     still fully automatic (route_message() in farmer_server.py). Every
+     message is routed and answered the same way regardless of which
+     view is open; switching views just changes which messages are
+     displayed. */
   .nav-btn {
     display: flex;
     align-items: center;
@@ -263,11 +288,17 @@
     width: 100%;
     padding: 10px 12px;
     border-radius: var(--radius-md);
+    border: none;
     background: transparent;
     color: rgba(255, 255, 255, 0.55);
     text-align: left;
+    cursor: pointer;
+    font-family: "Inter", sans-serif;
     transition: background 0.15s ease, color 0.15s ease;
   }
+
+  .nav-btn:hover { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.85); }
+  .nav-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.6); outline-offset: 1px; }
 
   .nav-btn.active {
     background: rgba(255, 255, 255, 0.14);
@@ -359,6 +390,57 @@
     text-overflow: ellipsis;
   }
 
+  .farm-edit-btn {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.45);
+    cursor: pointer;
+    font-size: 0.78rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .farm-edit-btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+
+  .farm-edit-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 11px;
+    margin: 2px 0;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .farm-edit-panel input {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+    font-family: "Inter", sans-serif;
+    font-size: 0.83rem;
+  }
+  .farm-edit-panel input::placeholder { color: rgba(255, 255, 255, 0.4); }
+  .farm-edit-panel input:focus { outline: none; border-color: rgba(255, 255, 255, 0.5); }
+  .farm-edit-actions { display: flex; gap: 7px; }
+  .farm-edit-actions button {
+    flex: 1;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: none;
+    font-family: "Inter", sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .farm-edit-save { background: #fff; color: var(--brand); }
+  .farm-edit-cancel { background: transparent; color: rgba(255, 255, 255, 0.7); border: 1px solid rgba(255, 255, 255, 0.24) !important; }
+
   .farms-empty {
     font-size: 0.78rem;
     color: rgba(255, 255, 255, 0.5);
@@ -429,13 +511,17 @@
   /* ---------- Main column ---------- */
 
   .main {
-    padding: 24px 28px 32px;
+    padding: 20px 28px 20px;
     max-width: 880px;
     width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   @media (max-width: 640px) {
-    .main { padding: 18px 16px 24px; }
+    .main { padding: 14px 16px 14px; height: auto; min-height: 100%; }
   }
 
   .topline {
@@ -443,8 +529,9 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
-    margin-bottom: 20px;
+    margin-bottom: 14px;
     flex-wrap: wrap;
+    flex-shrink: 0;
   }
 
   .topline h2 {
@@ -481,7 +568,8 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 12px;
-    margin-bottom: 20px;
+    margin-bottom: 14px;
+    flex-shrink: 0;
   }
 
   @media (max-width: 720px) {
@@ -527,7 +615,11 @@
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md);
     overflow: hidden;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .panel-head {
@@ -537,6 +629,7 @@
     gap: 10px;
     padding: 14px 18px;
     border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
   }
 
   .panel-head-left {
@@ -570,9 +663,15 @@
   .convo-empty {
     color: var(--ink-soft);
     text-align: center;
-    padding: 48px 20px;
+    padding: 24px 20px;
     font-size: 0.95rem;
     line-height: 1.6;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
   }
 
   .convo-empty .icon-row { font-size: 1.9rem; margin-bottom: 10px; }
@@ -581,9 +680,10 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    max-height: 52vh;
+    flex: 1 1 auto;
     overflow-y: auto;
     padding: 18px;
+    min-height: 0;
   }
 
   .bubble {
@@ -674,40 +774,6 @@
   }
   .farm-pick-btn:hover { background: var(--accent); color: #fff; }
 
-  /* Location row inside panel */
-
-  .location-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: var(--weather-soft);
-    border-top: 1px solid var(--line);
-    padding: 10px 18px;
-  }
-
-  .location-row label {
-    font-size: 0.83rem;
-    font-weight: 700;
-    color: var(--weather);
-    white-space: nowrap;
-  }
-
-  .location-row input {
-    flex: 1;
-    border: none;
-    background: transparent;
-    font-family: "Inter", sans-serif;
-    font-size: 0.9rem;
-    color: var(--ink);
-    min-width: 0;
-  }
-  .location-row input:focus { outline: none; }
-  .location-row input::placeholder { color: var(--ink-faint); }
-
-  .location-row.needs-attention {
-    box-shadow: inset 0 0 0 1px var(--plant);
-  }
-
   /* Composer */
 
   .composer {
@@ -716,6 +782,7 @@
     align-items: flex-end;
     padding: 14px 18px 16px;
     border-top: 1px solid var(--line);
+    flex-shrink: 0;
   }
 
   #talk-box {
@@ -773,6 +840,71 @@
   #mic-btn:hover { background: var(--surface-sunken); }
   #mic-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #mic-btn[hidden] { display: none; }
+  #mic-btn.recording {
+    background: var(--plant);
+    border-color: var(--plant);
+    color: #fff;
+    animation: mic-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(161, 80, 47, 0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(161, 80, 47, 0); }
+  }
+
+  /* Always-listening status indicator -- not a control, just shows
+     whether the wakeword loop is currently armed. There's no button to
+     turn it off/on mid-session by design: once enabled via the startup
+     modal, it listens for as long as the tab stays open (see the
+     enable-voice modal below for why that one-time gesture is
+     unavoidable). */
+
+  .wake-toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--ink-soft);
+    font-family: "Inter", sans-serif;
+    font-size: 0.8rem;
+    font-weight: 600;
+    min-height: 36px;
+  }
+  .wake-toggle[hidden] { display: none; }
+
+  .wake-toggle.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .wake-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ink-faint);
+  }
+  .wake-toggle.active .wake-dot {
+    background: var(--accent);
+    animation: mic-pulse 1.6s ease-in-out infinite;
+  }
+
+  .voice-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.83rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--line);
+  }
+  .voice-status-row[hidden] { display: none; }
+  .voice-status-row.heard { background: var(--weather-soft); color: var(--weather); }
+  .voice-status-row.speaking { background: var(--plant-soft); color: var(--plant); }
 
   /* Crops row */
 
@@ -781,7 +913,8 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-sm);
-    padding: 16px 18px;
+    padding: 12px 18px;
+    flex-shrink: 0;
   }
 
   .crops-panel h3 {
@@ -814,7 +947,6 @@
      on mobile widths where that zoom behavior actually triggers. */
   @media (max-width: 900px) {
     #talk-box,
-    .location-row input,
     .add-farm-panel input,
     .modal-input-row input {
       font-size: 16px;
@@ -967,40 +1099,40 @@
 
 <div class="shell">
   <aside class="sidebar" id="sidebar">
-    <div class="brand">
+    <button type="button" class="brand" id="brand-btn" aria-label="General — everything, in one place">
       <div class="brand-mark">🌾</div>
       <div class="brand-text">
         <h1>Farm Assistant</h1>
-        <p>Weather · Crop · Plant health</p>
+        <p>Ask about weather, crops, or a plant problem — by voice or text.</p>
       </div>
-    </div>
+    </button>
 
     <nav>
       <div class="side-section-label">Assistants</div>
       <div class="nav-list" id="nav-list">
-        <div class="nav-btn" data-domain="weather" id="btn-weather">
+        <button type="button" class="nav-btn" data-view="weather" id="btn-weather">
           <span class="nav-icon">☁️</span>
           <span class="nav-text">
             <div class="nav-title">Weather</div>
             <div class="nav-sub">Conditions &amp; forecast</div>
           </span>
-        </div>
-        <div class="nav-btn" data-domain="crop" id="btn-crop">
+        </button>
+        <button type="button" class="nav-btn" data-view="crop" id="btn-crop">
           <span class="nav-icon">🌱</span>
           <span class="nav-text">
             <div class="nav-title">Crop</div>
             <div class="nav-sub">What to plant now</div>
           </span>
-        </div>
-        <div class="nav-btn" data-domain="plant" id="btn-plant">
+        </button>
+        <button type="button" class="nav-btn" data-view="plant" id="btn-plant">
           <span class="nav-icon">🩺</span>
           <span class="nav-text">
             <div class="nav-title">Plant Health</div>
             <div class="nav-sub">Diagnose a symptom</div>
           </span>
-        </div>
+        </button>
       </div>
-      <div class="nav-hint">One chat — I'll automatically use the right assistant for each question.</div>
+      <div class="nav-hint">Tap "Farm Assistant" above for the combined view — ask anything there and I'll bring in the right assistant automatically, filing the conversation into its own section too.</div>
     </nav>
 
     <div>
@@ -1020,10 +1152,7 @@
 
   <main class="main">
     <div class="topline">
-      <div>
-        <h2 id="page-title">Farm Assistant</h2>
-        <div class="sub" id="page-sub">Ask anything — weather, what to plant, or a plant problem.</div>
-      </div>
+      <h2 id="page-title">Farm Assistant</h2>
       <span class="status-pill" id="capability-pill"><span class="dot"></span><span id="capability-note">Ready</span></span>
     </div>
 
@@ -1049,9 +1178,17 @@
     <div class="panel">
       <div class="panel-head">
         <div class="panel-head-left">
-          <span class="panel-head-icon" id="panel-icon">🌾</span>
-          <h3 id="panel-title">Chat</h3>
+          <span class="panel-head-icon" id="panel-icon">💬</span>
+          <h3 id="panel-title">General</h3>
         </div>
+        <span class="wake-toggle" id="wake-indicator" hidden>
+          <span class="wake-dot" id="wake-dot"></span>
+          <span id="wake-indicator-label">Listening</span>
+        </span>
+      </div>
+      <div class="voice-status-row" id="voice-status-row" hidden>
+        <span id="voice-status-icon">🎙️</span>
+        <span id="voice-status-text">Listening for "Hey Green" or "Hey Doc"…</span>
       </div>
 
       <div class="convo-empty" id="convo-empty">
@@ -1060,10 +1197,11 @@
       </div>
       <div class="convo-log" id="convo-log" hidden></div>
 
-      <div class="location-row" id="location-row" hidden>
-        <label for="location-box">📍 Where's your farm?</label>
-        <input id="location-box" type="text" placeholder="City name, e.g. Colombo, LK" />
-      </div>
+      <!-- Data-holding only, never shown -- location is now collected
+           exclusively via the location modal (showLocationModal()),
+           applyLocation() writes into this input the same way it always
+           did, and sendMessage() still reads from it unchanged. -->
+      <input id="location-box" type="text" hidden />
 
       <div class="composer">
         <textarea id="talk-box" placeholder="Ask about weather, crops, or a plant problem…" rows="1"></textarea>
@@ -1095,21 +1233,48 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="enable-voice-modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="enable-voice-title">
+    <div class="modal-icon">🎙️</div>
+    <h3 id="enable-voice-title">Turn on hands-free voice?</h3>
+    <p>Say "Hey Green" or "Hey Doc" any time to ask a question without touching the screen. Your browser will ask for microphone permission once, then this stays on for the rest of your visit.</p>
+    <button class="modal-detect-btn" id="enable-voice-btn" type="button">🎙️ Enable voice</button>
+    <div class="modal-foot">
+      <button id="enable-voice-skip-btn" type="button">Not now, I'll type instead</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const state = {
-  // Which agent the chat is currently routed to -- purely a display
-  // concern client-side now; the SERVER decides routing per-message (see
-  // route_message() in farmer_server.py) and tells us via each reply's
-  // `domain` field. Starts matching the server's own default ("crop").
-  activeDomain: "crop",
+  // Which agent most recently answered -- purely informational now (used
+  // for the redirect "Switched to X" notice and the location-modal
+  // trigger), NOT which view is open. The SERVER decides routing
+  // per-message (see route_message() in farmer_server.py) regardless of
+  // which view the farmer is looking at.
+  lastAnsweredDomain: "crop",
+  // Which section the farmer is currently LOOKING AT: "general" shows
+  // every message regardless of domain; "weather"/"crop"/"plant" show
+  // only that domain's filed history. Switching this never changes how a
+  // message gets routed/answered -- it only changes what's displayed.
+  activeView: "general",
   capabilities: null,
   // True once the location modal has been shown (answered or skipped) this
   // page session -- see maybeShowLocationModal(). Reset on page reload, so
   // returning without a saved location gets asked again.
   locationPromptSeen: false,
+  // True once the enable-voice modal has been resolved (enabled or
+  // skipped) this page session -- see maybeShowEnableVoiceModal().
+  enableVoicePromptSeen: false,
+  // Every message/notice ever added this session, in order -- the single
+  // source of truth renderMessages() filters by activeView. Each entry:
+  // { kind: "you"|"agent"|"error"|"notice"|"nudge"|"picker", domain,
+  //   text, extra } where `extra` carries picker options etc.
+  messages: [],
 };
 
 const DOMAIN_META = {
+  general: { icon: "💬", title: "General" },
   weather: { icon: "☁️", title: "Weather" },
   crop: { icon: "🌱", title: "Crop" },
   plant: { icon: "🩺", title: "Plant Health" },
@@ -1117,13 +1282,13 @@ const DOMAIN_META = {
 
 const els = {
   navButtons: document.querySelectorAll(".nav-btn"),
+  brandBtn: document.getElementById("brand-btn"),
   convoEmpty: document.getElementById("convo-empty"),
   convoLog: document.getElementById("convo-log"),
   talkBox: document.getElementById("talk-box"),
   sendBtn: document.getElementById("send-btn"),
   micBtn: document.getElementById("mic-btn"),
   capabilityNote: document.getElementById("capability-note"),
-  locationRow: document.getElementById("location-row"),
   locationBox: document.getElementById("location-box"),
   sumLocation: document.getElementById("sum-location"),
   sumTemp: document.getElementById("sum-temp"),
@@ -1147,6 +1312,14 @@ const els = {
   sidebar: document.getElementById("sidebar"),
   drawerBackdrop: document.getElementById("drawer-backdrop"),
   drawerToggle: document.getElementById("farms-drawer-toggle"),
+  wakeIndicator: document.getElementById("wake-indicator"),
+  wakeIndicatorLabel: document.getElementById("wake-indicator-label"),
+  voiceStatusRow: document.getElementById("voice-status-row"),
+  voiceStatusIcon: document.getElementById("voice-status-icon"),
+  voiceStatusText: document.getElementById("voice-status-text"),
+  enableVoiceModal: document.getElementById("enable-voice-modal"),
+  enableVoiceBtn: document.getElementById("enable-voice-btn"),
+  enableVoiceSkipBtn: document.getElementById("enable-voice-skip-btn"),
 };
 
 function openDrawer() {
@@ -1167,39 +1340,123 @@ els.drawerToggle.addEventListener("click", () => {
 });
 els.drawerBackdrop.addEventListener("click", closeDrawer);
 
-function addBubble(kind, domain, text) {
-  if (!els.convoLog.hidden === false) {
-    els.convoEmpty.hidden = true;
-    els.convoLog.hidden = false;
+// Adds a message to the permanent history and re-renders whatever view is
+// currently open. `domain` is which assistant this message belongs to
+// (null for a farmer's own "you" bubble routed generically, or for a
+// cross-cutting notice like a redirect/location nudge that isn't really
+// "about" one domain). A message with a domain gets filed into BOTH the
+// General view (which shows everything) and that domain's own view --
+// General is a live combined feed, not a separate/competing history, so a
+// farmer who only ever uses General never loses anything by not visiting
+// the per-domain sections.
+function addMessage(kind, domain, text, extra) {
+  state.messages.push({ kind, domain, text, extra });
+  renderMessages();
+}
+
+// Rebuilds the visible log from state.messages, filtered to whatever
+// view is currently open. Called after every new message AND every view
+// switch -- cheap enough (this is a farmer chat, not a firehose) and
+// avoids two divergent code paths (one for "append live" and one for
+// "load a section's history") that could drift out of sync.
+function renderMessages() {
+  const view = state.activeView;
+  const visible = view === "general"
+    ? state.messages
+    : state.messages.filter((m) => m.domain === view || m.domain == null);
+
+  els.convoLog.innerHTML = "";
+  for (const m of visible) {
+    renderOneMessage(m);
   }
-  const div = document.createElement("div");
-  div.className = "bubble " + kind + (domain ? ` domain-${domain}` : "");
-  div.textContent = text;
-  els.convoLog.appendChild(div);
+
+  const hasMessages = visible.length > 0;
+  els.convoEmpty.hidden = hasMessages;
+  els.convoLog.hidden = !hasMessages;
   els.convoLog.scrollTop = els.convoLog.scrollHeight;
 }
 
-// Updates the sidebar's "currently active" highlight and the panel header
-// to reflect which agent just answered -- purely reactive to what the
-// server's /chat response reports, never something the farmer clicks.
-function setActiveDomain(domain) {
-  const changed = domain !== state.activeDomain;
-  state.activeDomain = domain;
-  els.navButtons.forEach((b) => b.classList.toggle("active", b.dataset.domain === domain));
+function renderOneMessage(m) {
+  if (m.kind === "picker") {
+    const picker = document.createElement("div");
+    picker.className = "farm-picker";
+    const label = document.createElement("div");
+    label.className = "location-nudge";
+    label.textContent = "🌾 Which farm is this about?";
+    els.convoLog.appendChild(label);
+    for (const name of m.extra.names) {
+      const btn = document.createElement("button");
+      btn.className = "farm-pick-btn";
+      btn.textContent = name;
+      btn.addEventListener("click", () => sendMessage(m.extra.retryText, name));
+      picker.appendChild(btn);
+    }
+    els.convoLog.appendChild(picker);
+    return;
+  }
+  if (m.kind === "notice") {
+    const notice = document.createElement("div");
+    notice.className = "redirect-notice";
+    notice.textContent = m.text;
+    els.convoLog.appendChild(notice);
+    return;
+  }
+  if (m.kind === "nudge") {
+    const nudge = document.createElement("div");
+    nudge.className = "location-nudge";
+    nudge.textContent = m.text;
+    els.convoLog.appendChild(nudge);
+    return;
+  }
+  const div = document.createElement("div");
+  div.className = "bubble " + m.kind + (m.domain ? ` domain-${m.domain}` : "");
+  div.textContent = m.text;
+  els.convoLog.appendChild(div);
+}
 
-  const meta = DOMAIN_META[domain];
+// Switches which section the farmer is looking at -- General (everything)
+// or one domain's filed history. Never affects routing: a message typed
+// or spoken while any view is open still goes through the same
+// route_message() logic server-side and gets filed by whatever domain
+// actually answered it, not by whichever view happened to be open.
+function setActiveView(view) {
+  state.activeView = view;
+  els.navButtons.forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  els.brandBtn.classList.toggle("active", view === "general");
+
+  const meta = DOMAIN_META[view];
   if (meta) {
     els.panelIcon.textContent = meta.icon;
     els.panelTitle.textContent = meta.title;
   }
 
-  // Location only matters to the Weather agent -- WeatherAgent.handle()
-  // falls back to farm_state's last-known location (or the server's
-  // configured default) when this is left blank, so showing/hiding this
-  // row per domain rather than always-on keeps Crop/Plant uncluttered.
-  els.locationRow.hidden = domain !== "weather";
+  renderMessages();
+}
+
+// Reactive to which domain actually ANSWERED (from the server's response),
+// independent of which view the farmer has open -- e.g. a farmer looking
+// at "Plant Health" who asks a weather question through General/voice
+// still gets the location modal, because the answer came from Weather,
+// even though "Plant Health" is the visible section. Also updates the
+// redirect-notice message text.
+function noteAnsweredDomain(domain) {
+  const changed = domain !== state.lastAnsweredDomain;
+  state.lastAnsweredDomain = domain;
+
+  // Triggered by which domain actually ANSWERED, not by which view is
+  // open -- so a weather answer surfaced through General (or reached via
+  // voice while looking at a different section) still prompts for a
+  // location. setActiveView() handles show/hiding the location ROW based
+  // on the currently open view; this only handles the one-time MODAL.
+  //
+  // Deliberately does NOT call autoDetectLocation() here -- that
+  // immediately triggers the browser's native GPS permission prompt with
+  // no farmer action, which is exactly the surprising behavior flagged
+  // live (2026-09-21): the location modal should show a TEXT INPUT first,
+  // never jump straight to a location-access prompt on its own. GPS
+  // detection stays available but only as an explicit opt-in via the
+  // modal's own "Detect my location automatically" button.
   if (changed && domain === "weather" && !els.locationBox.value.trim()) {
-    autoDetectLocation();
     maybeShowLocationModal();
   }
 }
@@ -1233,52 +1490,22 @@ function hideLocationModal() {
 function applyLocation(loc) {
   els.locationBox.value = loc;
   try { localStorage.setItem("farmLocation", loc); } catch (e) { /* private mode etc -- fine to skip */ }
-  els.locationRow.classList.remove("needs-attention");
   hideLocationModal();
-}
-
-// Fills the location box automatically so most farmers never have to type
-// a city by hand -- GPS first (accurate to the actual farm, needs a
-// one-time browser permission prompt), falling back to IP-based
-// geolocation (coarser, silent, no prompt) if GPS is denied or
-// unsupported. Either way this only pre-fills the box; the location isn't
-// treated as "confirmed" until the farmer actually sends a question with
-// it in place (see sendMessage(), which is what marks farm_state's
-// location_confirmed) -- so a wrong auto-detected city is still visible
-// and editable before it's ever acted on.
-function autoDetectLocation() {
-  const applyResolved = async (lat, lon) => {
-    try {
-      const resp = await fetch("/resolve_location", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(lat != null ? { lat, lon } : {}),
-      });
-      const data = await resp.json();
-      if (data.location && !els.locationBox.value.trim()) {
-        els.locationBox.value = data.location;
-        els.locationBox.placeholder = "City name, e.g. Colombo, LK";
-      }
-    } catch (e) { /* auto-detect is best-effort -- farmer can still type one in */ }
-  };
-
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => applyResolved(pos.coords.latitude, pos.coords.longitude),
-      () => applyResolved(null, null),  // denied/unavailable -- fall back to IP lookup
-      { timeout: 5000 }
-    );
-  } else {
-    applyResolved(null, null);
-  }
 }
 
 async function sendMessage(overrideText, farmName) {
   const text = overrideText != null ? overrideText : els.talkBox.value.trim();
-  if (!text || !state.activeDomain) return;
+  if (!text) return;
 
+  // The "you" bubble's domain isn't known until the reply comes back
+  // (that's the whole point of auto-routing) -- tag it retroactively once
+  // handleAgentReply() knows which domain actually answered, so it shows
+  // up correctly filed in that domain's own view, not just General.
+  let youMessage = null;
   if (overrideText == null) {
-    addBubble("you", null, text);
+    youMessage = { kind: "you", domain: null, text, extra: null };
+    state.messages.push(youMessage);
+    renderMessages();
     els.talkBox.value = "";
   }
   els.sendBtn.disabled = true;
@@ -1308,67 +1535,56 @@ async function sendMessage(overrideText, farmName) {
     });
     const data = await resp.json();
     hint.remove();
-
-    if (data.switched) {
-      const notice = document.createElement("div");
-      notice.className = "redirect-notice";
-      notice.textContent = `↪ Switched to ${domainLabel(data.domain)}`;
-      els.convoLog.appendChild(notice);
-    }
-    setActiveDomain(data.domain);
-
-    if (data.ambiguous_farms && data.ambiguous_farms.length > 0) {
-      // Don't show this as a normal agent reply -- offer a picker instead,
-      // and re-send the SAME question with farm_name set once tapped, so
-      // the farmer never has to retype anything.
-      const picker = document.createElement("div");
-      picker.className = "farm-picker";
-      const label = document.createElement("div");
-      label.className = "location-nudge";
-      label.textContent = "🌾 Which farm is this about?";
-      els.convoLog.appendChild(label);
-      for (const name of data.ambiguous_farms) {
-        const btn = document.createElement("button");
-        btn.className = "farm-pick-btn";
-        btn.textContent = name;
-        btn.addEventListener("click", () => sendMessage(text, name));
-        picker.appendChild(btn);
-      }
-      els.convoLog.appendChild(picker);
-      els.convoLog.scrollTop = els.convoLog.scrollHeight;
-      els.sendBtn.disabled = false;
-      els.talkBox.focus();
-      return;
-    }
-
-    addBubble("agent", data.domain, data.response);
-    renderFarmState(data.farm_state);
-
-    if (data.needs_location) {
-      els.locationRow.hidden = false;
-      els.locationRow.classList.add("needs-attention");
-      const nudge = document.createElement("div");
-      nudge.className = "location-nudge";
-      nudge.textContent = "📍 I'm using a default location — tell me where your farm is for accurate weather.";
-      els.convoLog.appendChild(nudge);
-      // Belt-and-braces: the proactive modal (maybeShowLocationModal, fired
-      // when Weather is first opened) should normally have already caught
-      // this, but if the server still reports no confirmed location after
-      // a reply, ask again rather than leaving it to the easy-to-miss
-      // inline banner alone.
-      if (!state.locationPromptSeen) showLocationModal();
-    } else {
-      els.locationRow.classList.remove("needs-attention");
-    }
-
-    els.convoLog.scrollTop = els.convoLog.scrollHeight;
+    if (youMessage) youMessage.domain = data.domain;
+    handleAgentReply(data, { spoken: false, retryText: text });
   } catch (err) {
     hint.remove();
-    addBubble("error", null, "Couldn't reach the assistant. Check your connection and try again.");
+    addMessage("error", null, "Couldn't reach the assistant. Check your connection and try again.");
   }
 
   els.sendBtn.disabled = false;
   els.talkBox.focus();
+}
+
+// Shared by both the typed /chat path (sendMessage) and the voice /voice
+// WebSocket path (see the voice module below) -- both send back the same
+// reply shape (domain/response/switched/ambiguous_farms/needs_location/
+// farm_state), so the rendering logic only needs to exist once.
+// `opts.spoken`: true for a voice-triggered reply, which also speaks the
+// response aloud via speechSynthesis once rendered. `opts.retryText`: the
+// original question text, needed to resend with a farm_name when the
+// farm-disambiguation picker is used.
+function handleAgentReply(data, opts) {
+  const { spoken, retryText } = opts;
+
+  if (data.switched) {
+    addMessage("notice", data.domain, `↪ Switched to ${domainLabel(data.domain)}`);
+  }
+  noteAnsweredDomain(data.domain);
+
+  if (data.ambiguous_farms && data.ambiguous_farms.length > 0) {
+    // Don't show this as a normal agent reply -- offer a picker instead,
+    // and re-send the SAME question with farm_name set once tapped, so
+    // the farmer never has to retype anything.
+    addMessage("picker", data.domain, null, { names: data.ambiguous_farms, retryText });
+    if (spoken) speak(data.response);
+    return;
+  }
+
+  addMessage("agent", data.domain, data.response);
+  renderFarmState(data.farm_state);
+
+  if (data.needs_location) {
+    addMessage("nudge", data.domain, "📍 I'm using a default location — tell me where your farm is for accurate weather.");
+    // Belt-and-braces: the proactive modal (maybeShowLocationModal, fired
+    // by noteAnsweredDomain() above) should normally have already caught
+    // this, but if the server still reports no confirmed location after
+    // a reply, ask again rather than leaving it to the easy-to-miss
+    // inline banner alone.
+    if (!state.locationPromptSeen) showLocationModal();
+  }
+
+  if (spoken) speak(data.response);
 }
 
 function domainLabel(domain) {
@@ -1402,14 +1618,26 @@ function renderFarmState(fs) {
   renderFarmsList(farms, activeIdx);
 }
 
+// Index of the farm currently showing its inline edit panel, or null --
+// module-level so it survives the next renderFarmsList() call (e.g. after
+// switching active farm) rather than resetting the edit UI unexpectedly.
+let editingFarmIndex = null;
+
 // Renders the sidebar farm list -- clicking a row selects that farm
 // (POST /farms/{index}/select) so the next question uses it without
-// needing to retype a location or answer a disambiguation prompt.
+// needing to retype a location or answer a disambiguation prompt. The
+// pencil button opens an inline rename/relocate panel (PATCH /farms/{i})
+// for a farm that's already been added -- separate from "+ Add a farm",
+// which only ever creates a new one.
 function renderFarmsList(farms, activeIdx) {
   els.farmsList.innerHTML = "";
   els.farmsEmpty.hidden = farms.length > 0;
 
   farms.forEach((farm, i) => {
+    if (i === editingFarmIndex) {
+      els.farmsList.appendChild(buildFarmEditPanel(farm, i));
+      return;
+    }
     const row = document.createElement("button");
     row.type = "button";
     row.className = "farm-row" + (i === activeIdx ? " active" : "");
@@ -1419,10 +1647,53 @@ function renderFarmsList(farms, activeIdx) {
         <div class="farm-name">${escapeHtml(farm.name)}</div>
         <div class="farm-location">${farm.location ? escapeHtml(farm.location) : "No location set"}</div>
       </span>
+      <span class="farm-edit-btn" title="Edit farm">✏️</span>
     `;
-    row.addEventListener("click", () => selectFarm(i));
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".farm-edit-btn")) {
+        editingFarmIndex = i;
+        renderFarmsList(farms, activeIdx);
+        return;
+      }
+      selectFarm(i);
+    });
     els.farmsList.appendChild(row);
   });
+}
+
+function buildFarmEditPanel(farm, i) {
+  const panel = document.createElement("div");
+  panel.className = "farm-edit-panel";
+  panel.innerHTML = `
+    <input class="edit-farm-name" type="text" value="${escapeHtml(farm.name)}" placeholder="Farm name" />
+    <input class="edit-farm-location" type="text" value="${escapeHtml(farm.location || "")}" placeholder="Location, e.g. Colombo, LK" />
+    <div class="farm-edit-actions">
+      <button type="button" class="farm-edit-save">Save</button>
+      <button type="button" class="farm-edit-cancel">Cancel</button>
+    </div>
+  `;
+  const nameInput = panel.querySelector(".edit-farm-name");
+  const locationInput = panel.querySelector(".edit-farm-location");
+  panel.querySelector(".farm-edit-save").addEventListener("click", () => saveFarmEdit(i, nameInput.value, locationInput.value));
+  panel.querySelector(".farm-edit-cancel").addEventListener("click", () => {
+    editingFarmIndex = null;
+    loadFarmState();
+  });
+  return panel;
+}
+
+async function saveFarmEdit(index, name, location) {
+  const trimmedName = name.trim();
+  if (!trimmedName) return;
+  try {
+    await fetch(`/farms/${index}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: trimmedName, location: location.trim() }),
+    });
+  } catch (e) { /* best-effort -- panel just closes on the stale data */ }
+  editingFarmIndex = null;
+  await loadFarmState();
 }
 
 function escapeHtml(s) {
@@ -1459,7 +1730,7 @@ async function addFarm() {
     els.addFarmPanel.hidden = true;
     await loadFarmState();
   } catch (e) {
-    addBubble("error", null, "Couldn't add that farm. Check your connection and try again.");
+    addMessage("error", null, "Couldn't add that farm. Check your connection and try again.");
   }
   els.addFarmBtn.disabled = false;
 }
@@ -1473,8 +1744,8 @@ async function loadCapabilities() {
   }
 
   els.navButtons.forEach((btn) => {
-    const domain = btn.dataset.domain;
-    if (state.capabilities.domains_available[domain] === false) {
+    const domain = btn.dataset.view;
+    if (domain !== "general" && state.capabilities.domains_available[domain] === false) {
       btn.classList.add("unavailable");
       btn.querySelector(".nav-sub").textContent = "Not set up yet";
     }
@@ -1482,6 +1753,16 @@ async function loadCapabilities() {
 
   if (state.capabilities.mic_available) {
     els.micBtn.hidden = false;
+  }
+
+  // The enable-voice prompt additionally needs at least one .onnx
+  // wakeword model actually present -- otherwise there's nothing to
+  // listen FOR, so the modal never offers a control that would just
+  // fail. Only push-to-talk (mic-btn above) still works in that case.
+  const wakewordModels = state.capabilities.wakeword_models || {};
+  const hasAnyWakeword = Object.values(wakewordModels).some(Boolean);
+  if (state.capabilities.mic_available && hasAnyWakeword) {
+    maybeShowEnableVoiceModal();
   }
 
   els.capabilityNote.textContent = state.capabilities.phrasing_available ? "Ready" : "Plain-text mode";
@@ -1508,9 +1789,615 @@ els.talkBox.addEventListener("input", () => {
   els.talkBox.style.height = Math.min(els.talkBox.scrollHeight, 140) + "px";
 });
 
+// ============================================================
+// Voice module: wakeword detection (client-side, onnxruntime-web)
+// + streaming ASR (server-side, AssemblyAI via WS /voice) + spoken
+// replies (browser speechSynthesis).
+//
+// Two ways a farmer triggers voice input:
+//   1. Push-to-talk (mic-btn) -- tap, speak, tap again (or pause) to stop.
+//      Always available once mic_available is true, no wakeword needed.
+//   2. Always-listening wakeword mode (wake-toggle) -- opt-in (continuous
+//      mic access has real battery/privacy cost, so this is never on by
+//      default). While enabled, raw audio frames are scored against
+//      whatever .onnx model(s) actually exist (server-reported via
+//      /capabilities' wakeword_models) using onnxruntime-web running
+//      entirely in the browser -- no audio leaves the device until the
+//      wakeword actually fires. On a match, the SAME streaming-to-ASR
+//      path as push-to-talk takes over for the farmer's next utterance.
+//
+// Both paths converge on streamPcmToVoiceSocket(), which opens WS /voice
+// and feeds it raw 16-bit PCM mono @16kHz -- the exact format asr.py's
+// StreamingASR expects, matching main.py's local-mic pipeline's audio
+// format even though the capture mechanism (browser vs sounddevice) is
+// completely different.
+// ============================================================
+
+const PCM_SAMPLE_RATE = 16000;
+
+// Spoken the instant a wakeword fires, while the server's AssemblyAI
+// handshake (several seconds, see docs/build_log.md) runs in parallel --
+// masks that delay as a natural greeting instead of dead air/a status
+// label, and doubles as a cue that the system really did hear the
+// wakeword before the farmer starts talking.
+const WAKEWORD_GREETING = "Hey, I'm the farm assistant. How can I help you today?";
+
+// Spoken once after this many ms of no wakeword/voice activity -- a
+// courtesy heads-up only, NOT a real shutdown: wakeword detection keeps
+// running underneath the whole time (never disabled -- see the module
+// header comment on why there's deliberately no manual on/off control for
+// it), so the farmer doesn't need to do anything to "wake it back up".
+// The idle timer itself resets on every wakeword firing AND on every
+// completed voice exchange, so this only speaks during genuine silence,
+// and only once per silence stretch (not repeatedly).
+const IDLE_NUDGE_MS = 30_000;
+const IDLE_NUDGE_TEXT = "I'm not actively listening right now — just say the wakeword any time you need me.";
+
+const voice = {
+  audioContext: null,
+  micStream: null,
+  wakewordListening: false,
+  voiceSocket: null,
+  streaming: false,
+  _idleTimer: null,
+  _idleNudgeSpoken: false,
+};
+
+// Called on every sign of activity (wakeword fires, push-to-talk starts) --
+// pushes the idle-nudge deadline back out and clears the "already spoken"
+// flag so a later silence stretch can speak it again.
+function resetIdleTimer() {
+  voice._idleNudgeSpoken = false;
+  if (voice._idleTimer) clearTimeout(voice._idleTimer);
+  if (!voice.wakewordListening) return;
+  voice._idleTimer = setTimeout(() => {
+    if (voice.wakewordListening && !voice.streaming && !voice._idleNudgeSpoken) {
+      voice._idleNudgeSpoken = true;
+      speak(IDLE_NUDGE_TEXT);
+    }
+  }, IDLE_NUDGE_MS);
+}
+
+function speak(text) {
+  try {
+    if (!("speechSynthesis" in window) || !text) return;
+    window.speechSynthesis.cancel();  // don't stack replies if one is still talking
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    window.speechSynthesis.speak(utterance);
+  } catch (e) { /* TTS is a nice-to-have, never block on it failing */ }
+}
+
+function setVoiceStatus(kind, text) {
+  els.voiceStatusRow.hidden = false;
+  els.voiceStatusRow.className = "voice-status-row" + (kind ? ` ${kind}` : "");
+  els.voiceStatusIcon.textContent = kind === "heard" ? "💬" : kind === "speaking" ? "🔊" : "🎙️";
+  els.voiceStatusText.textContent = text;
+}
+
+function hideVoiceStatus() {
+  els.voiceStatusRow.hidden = true;
+}
+
+// Downsamples a Float32Array of mic samples (at the AudioContext's native
+// rate, usually 44100/48000Hz) to 16kHz 16-bit PCM bytes -- AssemblyAI's
+// streaming API and asr.py both expect exactly this format, same as the
+// raw int16 frames main.py's sounddevice capture produces locally.
+function floatTo16kPcm(float32, inputSampleRate) {
+  const ratio = inputSampleRate / PCM_SAMPLE_RATE;
+  const outLength = Math.floor(float32.length / ratio);
+  const buffer = new ArrayBuffer(outLength * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < outLength; i++) {
+    const srcIndex = Math.floor(i * ratio);
+    let sample = Math.max(-1, Math.min(1, float32[srcIndex]));
+    sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    view.setInt16(i * 2, sample, true);  // little-endian, matches Encoding.pcm_s16le
+  }
+  return buffer;
+}
+
+async function getMicStream() {
+  if (voice.micStream) return voice.micStream;
+  voice.micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  });
+  return voice.micStream;
+}
+
+function getAudioContext() {
+  if (!voice.audioContext) {
+    // Requesting sampleRate: 16000 asks the browser to resample at the
+    // hardware/driver level when supported (Chrome/Firefox generally
+    // honor this) -- but not guaranteed, so every consumer of this
+    // context's audio must still resample explicitly via floatTo16kPcm()
+    // using ctx.sampleRate (the ACTUAL rate granted), never assume it's
+    // 16000 just because that's what was requested.
+    voice.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: PCM_SAMPLE_RATE });
+  }
+  return voice.audioContext;
+}
+
+// Streams one utterance's audio to WS /voice until the server reports a
+// final transcript (its own "result"/"error" message), then tears the
+// socket down. Shared by push-to-talk and wakeword-triggered listening --
+// neither knows or cares how the mic frames it receives were captured.
+function streamPcmToVoiceSocket(onFrameSource, onReady) {
+  return new Promise((resolve) => {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${proto}//${location.host}/voice`);
+    voice.voiceSocket = socket;
+    voice.streaming = true;
+
+    let stopCapture = null;
+
+    // The local WS "open" event fires almost instantly (it's just the
+    // FastAPI handshake) -- it says nothing about whether the server's
+    // AssemblyAI connection is actually ready yet, which can take several
+    // seconds (SDK-internal retry after an SSL handshake timeout, see
+    // docs/build_log.md). Starting mic capture on "open" used to mean the
+    // farmer's first few seconds of speech were sent before AssemblyAI was
+    // listening and got lost. Instead, wait for the server's explicit
+    // "ready" message (sent right after its blocking asr.connect() call
+    // returns) before starting capture at all.
+    socket.addEventListener("message", (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch (e) { return; }
+      if (data.type === "ready") {
+        // NOT a terminal message -- must NOT cleanup()/close the socket
+        // here, only start capture. cleanup() runs once a real "error" or
+        // "result" (or a socket error/close) actually ends the exchange.
+        if (onReady) onReady();
+        stopCapture = onFrameSource((pcmBuffer) => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(pcmBuffer);
+        });
+        return;
+      } else if (data.type === "error") {
+        setVoiceStatus(null, data.message || "Voice input error.");
+        setTimeout(hideVoiceStatus, 3000);
+      } else if (data.type === "result") {
+        const youMessage = { kind: "you", domain: data.domain, text: data.transcript, extra: null };
+        state.messages.push(youMessage);
+        renderMessages();
+        setVoiceStatus("heard", "Got it — thinking…");
+        handleAgentReply(data, { spoken: true, retryText: data.transcript });
+      }
+      cleanup();
+    });
+
+    socket.addEventListener("error", () => cleanup());
+    socket.addEventListener("close", () => cleanup());
+
+    function cleanup() {
+      if (stopCapture) stopCapture();
+      voice.streaming = false;
+      voice.voiceSocket = null;
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+      resolve();
+    }
+  });
+}
+
+// Captures mic audio via a ScriptProcessorNode (deprecated but universally
+// supported, including older mobile browsers -- the modern AudioWorklet
+// replacement needs a separate worklet file and stricter secure-context
+// rules that aren't worth the complexity for this scope) and forwards
+// downsampled 16kHz PCM chunks to `onChunk` until stopped.
+async function captureMicPcm(onChunk) {
+  const stream = await getMicStream();
+  const ctx = getAudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  source.connect(processor);
+  processor.connect(ctx.destination);
+  const handler = (event) => {
+    const input = event.inputBuffer.getChannelData(0);
+    onChunk(floatTo16kPcm(input, ctx.sampleRate));
+  };
+  processor.addEventListener("audioprocess", handler);
+  return () => {
+    processor.removeEventListener("audioprocess", handler);
+    processor.disconnect();
+    source.disconnect();
+  };
+}
+
+// ---------- Push-to-talk ----------
+
+async function startPushToTalk() {
+  if (voice.streaming) return;
+  resetIdleTimer();
+  els.micBtn.classList.add("recording");
+  setVoiceStatus(null, "Connecting…");
+  await streamPcmToVoiceSocket(
+    (send) => {
+      let stopper = null;
+      captureMicPcm(send).then((stop) => { stopper = stop; });
+      return () => { if (stopper) stopper(); };
+    },
+    () => setVoiceStatus(null, "Listening — tap the mic again when you're done…")
+  );
+  els.micBtn.classList.remove("recording");
+  hideVoiceStatus();
+}
+
+function stopPushToTalk() {
+  if (voice.voiceSocket) voice.voiceSocket.close();
+}
+
+// ---------- Wakeword detection (client-side ONNX, real openWakeWord pipeline) ----------
+//
+// This is openWakeWord's actual 3-stage architecture, ported from its
+// Python reference implementation (openwakeword/utils.py's AudioFeatures
+// class) and verified against the real model files in a standalone Python
+// script before porting -- not a guess. Every wakeword's classifier .onnx
+// (field.onnx, plant.onnx) takes a stack of 16 audio EMBEDDINGS, not raw
+// audio, so raw mic samples have to run through two SHARED models first:
+//
+//   raw audio samples
+//     -> melspectrogram.onnx   (shared across all wakewords)
+//     -> embedding_model.onnx  (shared across all wakewords)
+//     -> your classifier .onnx (field.onnx / plant.onnx -- one per wakeword)
+//     -> confidence score
+//
+// Buffering/windowing constants below (1280-sample chunks, 480-sample
+// melspec context padding, 76-frame embedding window, 8-frame stride,
+// 16-embedding classifier window) are openWakeWord's own fixed values,
+// not tunable -- they must match exactly or the models silently produce
+// wrong output shapes/nonsense scores.
+const WAKE_CHUNK_SAMPLES = 1280;       // 80ms @ 16kHz -- one processing unit
+const WAKE_MELSPEC_WINDOW = 76;        // mel frames the embedding model consumes per call
+const WAKE_MELSPEC_STRIDE = 8;         // frames advanced between embedding windows
+const WAKE_EMBEDDING_WINDOW = 16;      // embeddings the classifier consumes per call
+const WAKE_THRESHOLD = 0.2;
+
+// Per-wakeword-name feature-extraction state -- melspectrogram/embedding
+// buffers are actually SHARED audio-feature computation, but kept
+// per-name here since each name's classifier reads the same underlying
+// buffer independently (running the shared stages once and sharing the
+// buffer across classifiers would be a nice optimization, but keeping
+// them separate is simpler to reason about and this is not a hot path).
+function makeWakewordFeatureState() {
+  return {
+    rawBuffer: [],                                         // accumulated int16 samples, unbounded within one session
+    accumulatedSamples: 0,                                  // samples added since the last 1280-multiple flush
+    melspecBuffer: new Array(WAKE_MELSPEC_WINDOW).fill(null).map(() => new Array(32).fill(1)),  // seeded like the Python reference's np.ones((76,32))
+    featureBuffer: [],                                       // rows of 96-value embeddings
+  };
+}
+
+// Runs melspectrogram.onnx on a window of raw int16 samples, applies
+// openWakeWord's fixed `x/10 + 2` transform (this exact constant is from
+// the reference implementation -- it's not a normalization Claude
+// invented, it's what makes the ONNX melspec model's output numerically
+// match the original TensorFlow model it was converted from).
+async function runMelspectrogram(session, int16Window) {
+  const floatSamples = Float32Array.from(int16Window);
+  const tensor = new ort.Tensor("float32", floatSamples, [1, floatSamples.length]);
+  const results = await session.run({ input: tensor });
+  const output = results.output;
+  const dims = output.dims;
+  // REAL runtime shape is [1, 1, timeSteps, 32] (confirmed via a direct
+  // Python onnxruntime call against the actual model file -- NOT
+  // [timeSteps, 1, ?, 32] as the model's declared dynamic-shape signature
+  // suggested. An earlier version of this code read dims[0] as timeSteps,
+  // when dims[0] is actually always the batch size (1) -- this silently
+  // extracted only 1 row per call instead of the real ~8, with a
+  // flattening formula that didn't match the tensor's actual memory
+  // layout, and was the root cause of wakeword confidence scores being
+  // stuck at/near 0 in live browser testing (2026-09-21). Squeeze out
+  // every size-1 dimension (mirroring the Python reference implementation's
+  // np.squeeze(outputs[0])) to get the real [timeSteps, melBins] shape
+  // regardless of which position the batch/singleton dims land in.
+  const meaningfulDims = dims.filter((d) => d !== 1);
+  const timeSteps = meaningfulDims[0] ?? 1;
+  const melBins = meaningfulDims[meaningfulDims.length - 1] ?? 32;
+  const data = output.data;
+  const rows = [];
+  for (let t = 0; t < timeSteps; t++) {
+    const row = new Array(melBins);
+    for (let m = 0; m < melBins; m++) {
+      row[m] = data[t * melBins + m] / 10 + 2;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+// Runs embedding_model.onnx on exactly WAKE_MELSPEC_WINDOW (76) stacked
+// mel-frame rows, returns one 96-value embedding.
+async function runEmbedding(session, melspecWindowRows) {
+  const flat = new Float32Array(WAKE_MELSPEC_WINDOW * 32);
+  for (let i = 0; i < WAKE_MELSPEC_WINDOW; i++) {
+    for (let j = 0; j < 32; j++) flat[i * 32 + j] = melspecWindowRows[i][j];
+  }
+  const tensor = new ort.Tensor("float32", flat, [1, WAKE_MELSPEC_WINDOW, 32, 1]);
+  const results = await session.run({ input_1: tensor });
+  const outName = session.outputNames[0];
+  return Array.from(results[outName].data);  // 96 values
+}
+
+// Runs one wakeword's classifier .onnx on the last WAKE_EMBEDDING_WINDOW
+// (16) embeddings, returns a single confidence score.
+async function runClassifier(session, last16Embeddings) {
+  const flat = new Float32Array(WAKE_EMBEDDING_WINDOW * 96);
+  for (let i = 0; i < WAKE_EMBEDDING_WINDOW; i++) {
+    for (let j = 0; j < 96; j++) flat[i * 96 + j] = last16Embeddings[i][j];
+  }
+  const tensor = new ort.Tensor("float32", flat, [1, WAKE_EMBEDDING_WINDOW, 96]);
+  const inputName = session.inputNames[0];
+  const results = await session.run({ [inputName]: tensor });
+  const outName = session.outputNames[0];
+  return results[outName].data[0];
+}
+
+// Feeds one chunk of new int16 PCM samples through the full pipeline for
+// one wakeword's feature state, updating its buffers in place and
+// returning a confidence score once enough audio has accumulated to
+// classify (null while still warming up -- same as the Python reference,
+// which returns 0.0 for the first few frames during buffer fill-up).
+async function processWakewordChunk(models, state, newInt16Samples) {
+  state.rawBuffer.push(...newInt16Samples);
+  state.accumulatedSamples += newInt16Samples.length;
+
+  // REAL BUG FOUND AND FIXED (2026-09-21): requiring accumulatedSamples to
+  // land on an EXACT multiple of WAKE_CHUNK_SAMPLES only works when the
+  // caller always hands over exactly-1280-sample chunks -- it breaks
+  // completely once audio goes through resampling first (floatTo16kPcm
+  // from a non-16kHz native rate), since resampled chunk sizes are
+  // irregular (e.g. 4096 samples @ 48kHz -> 1365.33 -> 1365, and
+  // repeatedly accumulating 1365 NEVER lands on a multiple of 1280 --
+  // confirmed by direct calculation, 0 hits in 200 callbacks). The
+  // pipeline would silently never produce a single score. Fixed by
+  // processing WHOLE 1280-sample chunks out of the accumulator and
+  // carrying any leftover forward, mirroring openWakeWord's own reference
+  // implementation's raw_data_remainder handling.
+  if (state.accumulatedSamples < WAKE_CHUNK_SAMPLES) {
+    return null;
+  }
+  const remainder = state.accumulatedSamples % WAKE_CHUNK_SAMPLES;
+  const nSamples = state.accumulatedSamples - remainder;
+  // melspectrogram needs 480 extra samples of leading context (160*3,
+  // matching the reference's `-n_samples-160*3` slice) beyond the new
+  // audio itself. Process only the whole-chunk region -- exclude any
+  // trailing remainder samples already pushed this call but not yet part
+  // of a complete unit.
+  const processedEnd = state.rawBuffer.length - remainder;
+  const windowStart = Math.max(0, processedEnd - nSamples - 480);
+  const window = state.rawBuffer.slice(windowStart, processedEnd);
+  const newMelRows = await runMelspectrogram(models.melspec, window);
+  state.melspecBuffer.push(...newMelRows);
+  if (state.melspecBuffer.length > 970) {  // 10s * 97 frames/s, same cap as the reference
+    state.melspecBuffer = state.melspecBuffer.slice(-970);
+  }
+
+  const nNewChunks = nSamples / WAKE_CHUNK_SAMPLES;
+  for (let i = nNewChunks - 1; i >= 0; i--) {
+    let endIdx = -WAKE_MELSPEC_STRIDE * i;
+    if (endIdx === 0) endIdx = state.melspecBuffer.length;
+    else endIdx = state.melspecBuffer.length + endIdx;
+    const startIdx = endIdx - WAKE_MELSPEC_WINDOW;
+    if (startIdx < 0) continue;
+    const windowRows = state.melspecBuffer.slice(startIdx, endIdx);
+    if (windowRows.length === WAKE_MELSPEC_WINDOW) {
+      const embedding = await runEmbedding(models.embedding, windowRows);
+      state.featureBuffer.push(embedding);
+    }
+  }
+  if (state.featureBuffer.length > 120) {
+    state.featureBuffer = state.featureBuffer.slice(-120);
+  }
+
+  // Trim the raw buffer back down but KEEP the trailing remainder samples
+  // (not yet part of a whole chunk) plus enough processed history for the
+  // next call's melspec context window -- losing the remainder here would
+  // silently drop audio instead of carrying it forward.
+  state.rawBuffer = state.rawBuffer.slice(-Math.max(WAKE_CHUNK_SAMPLES + 480, 4000) - remainder);
+  state.accumulatedSamples = remainder;
+
+  if (state.featureBuffer.length < WAKE_EMBEDDING_WINDOW) return null;  // still warming up
+  const last16 = state.featureBuffer.slice(-WAKE_EMBEDDING_WINDOW);
+  return runClassifier(models.classifier, last16);
+}
+
+// Loads the two SHARED feature-extraction models (same for every
+// wakeword) plus each wakeword's own classifier .onnx -- see
+// /capabilities' wakeword_models, which only reports a name available
+// once all three files needed to detect it actually exist server-side.
+async function loadWakewordModels() {
+  if (typeof ort === "undefined") return null;
+  const available = state.capabilities?.wakeword_models || {};
+  const names = Object.keys(available).filter((n) => available[n]);
+  if (names.length === 0) return null;
+
+  // onnxruntime-web needs to be told where to fetch its .wasm binaries
+  // from, and this version only ships the "threaded" WASM binary (no
+  // plain single-threaded variant exists in the package at all -- checked
+  // the actual published file list). The threaded binary needs either
+  // SharedArrayBuffer + cross-origin-isolation response headers
+  // (Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy, which this
+  // simple FastAPI static server doesn't send) or numThreads forced to 1
+  // to fall back to single-threaded execution using that same binary --
+  // forcing numThreads=1 is simpler than adding those headers project-
+  // wide, and wakeword scoring on one audio frame isn't perf-sensitive
+  // enough to need multi-threading anyway. jsDelivr (not cdnjs) is used
+  // here because cdnjs's mirror of this package is missing the .mjs
+  // module files onnxruntime-web's WASM loader dynamically imports --
+  // confirmed via direct curl checks (cdnjs 404s on ort-wasm-simd-
+  // threaded.mjs; jsDelivr serves it correctly). Also confirmed 1.19.2
+  // specifically has broken/0-byte .wasm assets on cdnjs -- pinned to
+  // 1.19.0 for that reason too. Re-verify with curl before changing
+  // either the CDN or the version.
+  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/";
+  ort.env.wasm.numThreads = 1;
+
+  try {
+    const melspec = await ort.InferenceSession.create("/wakeword-models/melspectrogram.onnx");
+    const embedding = await ort.InferenceSession.create("/wakeword-models/embedding_model.onnx");
+    const classifiers = {};
+    for (const name of names) {
+      classifiers[name] = await ort.InferenceSession.create(`/wakeword-models/${name}.onnx`);
+    }
+    return { melspec, embedding, classifiers };
+  } catch (e) {
+    console.warn("[wakeword] failed to load model pipeline", e);
+    return null;
+  }
+}
+
+async function startWakewordListening() {
+  if (voice.wakewordListening) return;
+  const models = await loadWakewordModels();
+  if (!models) {
+    addMessage("error", null, "No complete wakeword model set is available yet — field.onnx/plant.onnx plus the shared melspectrogram.onnx and embedding_model.onnx all need to be in the server's wakeword models folder.");
+    return;
+  }
+
+  const featureStates = {};
+  for (const name of Object.keys(models.classifiers)) {
+    featureStates[name] = makeWakewordFeatureState();
+  }
+
+  voice.wakewordListening = true;
+  els.wakeIndicator.hidden = false;
+  els.wakeIndicator.classList.add("active");
+  els.wakeIndicatorLabel.textContent = "Listening";
+  resetIdleTimer();
+  const wakewordLabel = (n) => (n === "field" ? "Hey Green" : n === "plant" ? "Hey Doc" : n);
+  // The idle "listening" state itself isn't shown in the voice-status row
+  // -- the wake-indicator pill in the panel header already says "Listening"
+  // compactly. The row is reserved for active feedback (connecting/go
+  // ahead/heard/error) so it doesn't sit there permanently at rest.
+  hideVoiceStatus();
+
+  const stream = await getMicStream();
+  const ctx = getAudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  source.connect(processor);
+  processor.connect(ctx.destination);
+
+  let busy = false;  // guards against overlapping async inference calls on successive audio callbacks
+  const onFrame = async (event) => {
+    if (!voice.wakewordListening || voice.streaming || busy) return;
+    busy = true;
+    try {
+      const input = event.inputBuffer.getChannelData(0);
+      // REAL BUG FOUND AND FIXED (2026-09-21): this used to convert
+      // `input` straight to int16 with NO resampling, feeding the
+      // wakeword models audio at the AudioContext's native rate
+      // (44100/48000Hz on virtually all real hardware) instead of the
+      // 16kHz they're trained on -- silently wrong acoustic features,
+      // producing scores that were "reactive" (some coarse energy
+      // correlation survived) but never confidently crossed threshold.
+      // floatTo16kPcm() (already used correctly by the ASR/push-to-talk
+      // path below via captureMicPcm) resamples using the context's
+      // ACTUAL granted rate, not assumed. It returns a raw ArrayBuffer
+      // (built for WebSocket transmission) -- wrap as Int16Array so it's
+      // iterable/spreadable the way processWakewordChunk's buffer needs.
+      const int16Samples = new Int16Array(floatTo16kPcm(input, ctx.sampleRate));
+
+      let detected = null;
+      for (const [name, classifierSession] of Object.entries(models.classifiers)) {
+        const score = await processWakewordChunk(
+          { melspec: models.melspec, embedding: models.embedding, classifier: classifierSession },
+          featureStates[name],
+          int16Samples
+        );
+        if (score != null && score >= WAKE_THRESHOLD && (!detected || score > detected.score)) {
+          detected = { name, score };
+        }
+      }
+
+      if (detected) {
+        resetIdleTimer();
+        // The AssemblyAI handshake takes several seconds (SDK-internal
+        // retry after an SSL timeout, see docs/build_log.md) -- rather
+        // than leave the farmer staring at a "connecting…" label for that
+        // whole stretch, speak a short greeting right as the wakeword
+        // fires. It's timed to roughly fill the handshake delay, so by the
+        // time the farmer's done hearing it and starts talking, the
+        // server's "ready" signal (flipping the status to "go ahead…")
+        // has normally already arrived.
+        setVoiceStatus("heard", `"${wakewordLabel(detected.name)}" — connecting…`);
+        speak(WAKEWORD_GREETING);
+        await streamPcmToVoiceSocket(
+          (send) => {
+            let stopper = null;
+            captureMicPcm(send).then((stop) => { stopper = stop; });
+            return () => { if (stopper) stopper(); };
+          },
+          () => setVoiceStatus("heard", `"${wakewordLabel(detected.name)}" — go ahead…`)
+        );
+        // Reset feature buffers after an utterance so stale audio context
+        // doesn't linger into the next wakeword detection attempt.
+        for (const name of Object.keys(featureStates)) {
+          featureStates[name] = makeWakewordFeatureState();
+        }
+        resetIdleTimer();
+        if (voice.wakewordListening) hideVoiceStatus();
+      }
+    } catch (e) {
+      console.warn("[wakeword] frame processing error", e);
+    } finally {
+      busy = false;
+    }
+  };
+  processor.addEventListener("audioprocess", onFrame);
+  voice._wakewordProcessor = processor;
+  voice._wakewordSource = source;
+  voice._wakewordHandler = onFrame;
+}
+
+function stopWakewordListening() {
+  voice.wakewordListening = false;
+  if (voice._idleTimer) clearTimeout(voice._idleTimer);
+  els.wakeIndicator.classList.remove("active");
+  els.wakeIndicatorLabel.textContent = "Listening";
+  if (voice._wakewordProcessor) {
+    voice._wakewordProcessor.removeEventListener("audioprocess", voice._wakewordHandler);
+    voice._wakewordProcessor.disconnect();
+  }
+  if (voice._wakewordSource) voice._wakewordSource.disconnect();
+  hideVoiceStatus();
+}
+
 els.micBtn.addEventListener("click", () => {
-  addBubble("error", null, "Voice input is being wired up — type your question for now.");
+  if (voice.streaming) {
+    stopPushToTalk();
+  } else {
+    startPushToTalk().catch((err) => {
+      addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
+      els.micBtn.classList.remove("recording");
+      hideVoiceStatus();
+    });
+  }
 });
+
+// No manual on/off control for wakeword listening -- see the module
+// header comment. It starts once, from the one-time enable-voice modal
+// (maybeShowEnableVoiceModal() below), and runs for as long as this tab
+// stays open. els.wakeIndicator is a passive status readout only.
+function maybeShowEnableVoiceModal() {
+  if (state.enableVoicePromptSeen) return;
+  state.enableVoicePromptSeen = true;
+  els.enableVoiceModal.hidden = false;
+}
+
+function hideEnableVoiceModal() {
+  els.enableVoiceModal.hidden = true;
+}
+
+els.enableVoiceBtn.addEventListener("click", () => {
+  hideEnableVoiceModal();
+  startWakewordListening().catch((err) => {
+    addMessage("error", null, "Couldn't start voice listening. Check your microphone permission in the browser's site settings.");
+    stopWakewordListening();
+  });
+});
+els.enableVoiceSkipBtn.addEventListener("click", hideEnableVoiceModal);
 
 els.addFarmToggle.addEventListener("click", () => {
   els.addFarmPanel.hidden = !els.addFarmPanel.hidden;
@@ -1571,6 +2458,11 @@ els.modalSkipBtn.addEventListener("click", () => {
   hideLocationModal();
 });
 
+els.navButtons.forEach((btn) => {
+  btn.addEventListener("click", () => setActiveView(btn.dataset.view));
+});
+els.brandBtn.addEventListener("click", () => setActiveView("general"));
+
 try {
   const savedLocation = localStorage.getItem("farmLocation");
   if (savedLocation) {
@@ -1579,7 +2471,7 @@ try {
   }
 } catch (e) { /* private mode etc -- fine to skip */ }
 
-setActiveDomain("crop");
+setActiveView("general");
 els.talkBox.focus();
 loadCapabilities();
 loadFarmState();

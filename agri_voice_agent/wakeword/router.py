@@ -1,16 +1,25 @@
 """Multi-wakeword routing layer.
 
-Two ONNX wakeword models: "Hey Field" (covers both Weather and Crop --
+Two ONNX wakeword models: "Hey Green" (covers both Weather and Crop --
 main.py resolves which one via intent.py's resolve_field_domain() once the
 transcript comes back, same deterministic keyword approach the farmer
-dashboard's chat uses) and "Hey Plant" (kept separate -- disease diagnosis
+dashboard's chat uses -- the function name kept its original "field"
+naming even though the spoken phrase moved on twice now, "Hey Field" then
+"Hey Green", same internal-stays-stable/only-the-phrase-changes pattern as
+"plant"/"Hey Doc" below) and "Hey Doc" (kept separate -- disease diagnosis
 is a different conversation shape, multi-turn and symptom-driven rather
-than a one-shot question). Originally three wakewords, one per domain
-(Weather/Crop/Plant); Weather and Crop were merged because in practice
-they're both short, single-shot informational questions a farmer asks
-without first deciding which specialist they want ("how's it looking out
-there" could be either), and "Hey Crop" specifically was acoustically weak
-on its own -- short, hard-stop ending, too close to "Hey Plant".
+than a one-shot question; internally still the "plant" domain/filename --
+"Hey Doc" is just the spoken phrase, chosen 2026-09-21 as a friendlier
+"plant doctor" framing than the original "Hey Plant"). Originally three
+wakewords, one per domain (Weather/Crop/Plant); Weather and Crop were
+merged because in practice they're both short, single-shot informational
+questions a farmer asks without first deciding which specialist they want
+("how's it looking out there" could be either), and "Hey Crop"
+specifically was acoustically weak on its own -- short, hard-stop ending,
+too close to "Hey Plant" (the original phrase for this domain). The
+merged phrase itself started as "Hey Field", then changed to "Hey Green"
+(2026-09-23) -- purely a wakeword-model/display-string swap, the
+underlying "field" domain key/filename convention never moved.
 
 First detector to cross its confidence threshold wins for a given frame.
 

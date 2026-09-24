@@ -14,6 +14,26 @@ from . import config
 
 _client: genai.Client | None = None
 
+# Shared default tone across every domain agent's LLM call, so "natural"
+# doesn't mean re-writing the same tone instructions in every prompt string
+# (expensive to keep consistent) -- baking it into system_instruction once
+# means every call site gets the same voice for free, and callers only add
+# prompt text describing what to say, not how to sound. Deliberately short:
+# this is speaking budget spent on TONE, not facts -- the deterministic
+# assessment in each prompt is still the only source of truth for content
+# (see this project's standing "LLM only phrases, never decides" rule,
+# e.g. crop.py's module docstring), and gemini-flash-lite-latest was picked
+# for speed, so a long system prompt would eat into that latency budget for
+# no benefit.
+DEFAULT_SYSTEM_INSTRUCTION = (
+    "You are a warm, experienced farm advisor talking to a farmer over voice, "
+    "not writing a report. Speak like you're standing in the field with them: "
+    "plain words, contractions, short sentences. Never list bullet points or "
+    "headers -- say it the way you'd say it out loud. Lead with the one thing "
+    "that matters most to them right now, not background. Never invent facts "
+    "beyond what you're given."
+)
+
 
 def _get_client() -> genai.Client:
     global _client
@@ -24,7 +44,11 @@ def _get_client() -> genai.Client:
     return _client
 
 
-def generate(prompt: str, system_instruction: str | None = None, model: str = "gemini-flash-lite-latest") -> str:
+def generate(
+    prompt: str,
+    system_instruction: str | None = DEFAULT_SYSTEM_INSTRUCTION,
+    model: str = "gemini-flash-lite-latest",
+) -> str:
     """Single-turn generation. Returns plain text.
 
     Uses the "-latest" alias rather than a pinned version (e.g.

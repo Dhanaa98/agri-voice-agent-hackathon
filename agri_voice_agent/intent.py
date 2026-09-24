@@ -1,5 +1,5 @@
 """Cross-domain intent detection, shared by the farmer dashboard's chat and
-the voice pipeline's combined "Hey Field" wakeword.
+the voice pipeline's combined "Hey Green" wakeword.
 
 Originally built only for the farmer dashboard (no wakeword there -- the
 farmer types/speaks freely, so something has to catch "what should I
@@ -7,14 +7,18 @@ plant" arriving while a Weather-routed reply was still last-active). The
 voice pipeline (main.py) used to need none of this, since each of its
 three wakewords ("Hey Weather"/"Hey Crop"/"Hey Plant") picked the domain
 directly. That's no longer true for Weather/Crop specifically: they were
-merged into one wakeword, "Hey Field" (see wakeword/router.py and
-main.py's `resolve_field_domain()`), covering the many everyday farm
-questions that don't cleanly sort into "obviously weather" or "obviously
-crop" before the farmer has even spoken -- "Hey Field" fires, THEN the
-transcript is routed via detect_domain() same as dashboard chat. "Hey
-Plant" stays its own separate wakeword (a different conversation shape --
-multi-turn diagnosis needs a symptom description, not a one-shot
-question -- so it was kept apart rather than folded in too).
+merged into one wakeword -- originally spoken as "Hey Field", now "Hey
+Green" (2026-09-23), the underlying merged-domain concept and the
+`resolve_field_domain()` function name never changed, only the phrase --
+see wakeword/router.py and main.py's `resolve_field_domain()`, covering
+the many everyday farm questions that don't cleanly sort into "obviously
+weather" or "obviously crop" before the farmer has even spoken -- "Hey
+Green" fires, THEN the transcript is routed via detect_domain() same as
+dashboard chat. "Hey Doc" (the plant-diagnosis wakeword; internally still
+the "plant" domain) stays its own separate wakeword (a different
+conversation shape -- multi-turn diagnosis needs a symptom description,
+not a one-shot question -- so it was kept apart rather than folded in
+too).
 
 Deterministic keyword matching, same philosophy as plant.py's
 match_symptom_category() -- never an LLM call, since routing to the wrong
@@ -84,10 +88,10 @@ def suggest_redirect(text: str, active_domain: str) -> str | None:
 
 
 def resolve_field_domain(text: str) -> str:
-    """Resolve a "Hey Field" utterance to "weather" or "crop" -- see this
+    """Resolve a "Hey Green" utterance to "weather" or "crop" -- see this
     module's docstring. Never returns "plant" (that keeps its own separate
     wakeword) and never returns None (unlike detect_domain/suggest_redirect,
-    "Hey Field" already committed to being answered by ONE of these two
+    "Hey Green" already committed to being answered by ONE of these two
     domains the moment the wakeword fired, so ambiguous wording still needs
     a decision, not a non-answer).
 

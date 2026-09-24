@@ -124,12 +124,10 @@ class CropAgent:
         deterministic_summary = "\n".join(summary_lines)
 
         prompt = (
-            "You are an agricultural advisor speaking to a farmer. Based on the "
-            "following deterministic crop-suitability assessment, give a short, "
-            "natural spoken response (2-4 sentences). Do not invent facts beyond "
-            "what's given; just phrase it naturally and prioritize the most "
-            "actionable point.\n\n"
+            "Give a 2-4 sentence spoken answer to a crop-suitability question, "
+            "based only on the assessment below.\n\n"
             f"Farm context:\n{farm.to_prompt_context()}\n\n"
+            f"{farm.recent_chat_context('crop')}\n\n"
             f"Assessment:\n{deterministic_summary}"
         )
         try:

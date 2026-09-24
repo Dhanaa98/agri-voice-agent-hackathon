@@ -5,7 +5,7 @@ Hackathon (lablab.ai). Full design in [AGRI_VOICE_AGENT_BRIEF.md](AGRI_VOICE_AGE
 
 Two wakewords route to three domain agents that share one `FarmState` object:
 
-- **"Hey Field"** — covers both Weather (live conditions + forecast, OpenWeatherMap
+- **"Hey Green"** — covers both Weather (live conditions + forecast, OpenWeatherMap
   free tier) and Crop (suitability advice, rule-based, informed by weather + disease
   history). Which one answers is resolved from the transcript after the wakeword
   fires (`intent.py`'s `resolve_field_domain()`, deterministic keyword matching, same
@@ -13,10 +13,29 @@ Two wakewords route to three domain agents that share one `FarmState` object:
   wakewords ("Hey Weather"/"Hey Crop") but were merged since both are short, single-
   shot informational questions a farmer asks without first deciding which specialist
   they want, and "Hey Crop" alone was acoustically weak (short, hard-stop ending, too
-  close to "Hey Plant").
-- **"Hey Plant"** — voice-only disease diagnosis via targeted follow-up questions.
+  close to "Hey Plant", the original phrase for the domain below).
+- **"Hey Doc"** — voice-only disease diagnosis via targeted follow-up questions.
   Kept as its own wakeword since it's a different conversation shape (multi-turn,
-  symptom-driven) rather than a one-shot question.
+  symptom-driven) rather than a one-shot question. Originally "Hey Plant", renamed
+  for a friendlier "plant doctor" framing (internally still the "plant" domain).
+
+## Live demo
+
+**Not yet deployed.** The farmer dashboard (`farmer_server.py`) is deployment-ready
+for [Render](https://render.com)'s free tier — `render.yaml`, `Procfile`, and a slim
+`requirements-deploy.txt` are already in place, and the server reads `$PORT`/binds
+`0.0.0.0` when running under a cloud host. A git repo exists locally with an initial
+commit but hasn't been pushed to GitHub yet. To deploy:
+
+1. `gh repo create agri-voice-agent --public --source=. --remote=origin --push`
+   (or push to a GitHub repo you create manually)
+2. On [render.com](https://render.com): New → Web Service → connect the repo →
+   it should auto-detect `render.yaml`
+3. Add `GEMINI_API_KEY`, `OPENWEATHER_API_KEY`, and (optionally) `ASSEMBLYAI_API_KEY`
+   as environment variables in Render's dashboard
+4. Deploy — you'll get a public URL that works on any device, including mobile
+
+Until that's done, run it locally (see below) and access it at `http://localhost:8001`.
 
 ## Setup
 
@@ -103,7 +122,7 @@ Fill in `.env`:
       not three features" claim. Supports `--live` to pull real weather once
       `OPENWEATHER_API_KEY` is set.
 - [ ] Wakeword models (.onnx) — to be dropped into `agri_voice_agent/wakeword/models/`
-      as `field.onnx`, `plant.onnx` (two models now, not three — see "Hey Field" above)
+      as `field.onnx`, `plant.onnx` (two models now, not three — see "Hey Green" above)
 - [ ] Live end-to-end test with real API keys + mic (only import/wiring verified so far)
 
 ## Try it now
@@ -144,7 +163,7 @@ in the background and streams live updates to the page — the active domain,
 the conversation transcript/responses, and the shared farm_state panel (so
 you can visually show weather or a Plant diagnosis changing what Crop says
 next). Omit `--domain` once wakeword `.onnx` models are in place to let both
-wakewords ("Hey Field", "Hey Plant") route naturally instead of forcing one
+wakewords ("Hey Green", "Hey Doc") route naturally instead of forcing one
 domain. Built to prove
 the cross-domain reasoning claim during a demo — not meant for a farmer to
 actually use day to day (raw state, debug-style transcript log).
@@ -163,23 +182,42 @@ continuous mic stream needed — the click *is* the activation. Shares the same
 `FarmState` file as the technical dashboard, so a diagnosis logged here shows
 up there too.
 
-- **Typed input** — fully built and tested end-to-end (`POST /message/{domain}`).
-  Works today with zero extra setup beyond what's already optional
-  (`GEMINI_API_KEY` improves phrasing; without it, responses show as the
-  plain structured text, same fallback the rest of the project uses).
-- **Voice input** — the mic button appears automatically once
-  `ASSEMBLYAI_API_KEY` is set; browser microphone capture streams audio to
-  `WS /voice/{domain}`, transcribed the same way as the main pipeline. Built
-  to the same API contract as `asr.py`, but **not yet verified end-to-end**
-  (no AssemblyAI key configured in this dev environment) — test with a real
-  key before relying on it live.
-- `GET /capabilities` tells the page what's actually usable so it never
-  offers a control that would just fail.
-- **Location** — a "Where's your farm?" field appears when Weather is
-  selected (remembered across visits via `localStorage`); without it, every
-  weather query silently used `config.DEFAULT_LOCATION` from `.env`, which
-  doesn't scale past one hardcoded location. Live-verified with a real
-  query (London, GB returned real London conditions).
+- **Typed input** — fully built and tested end-to-end (`POST /chat`, single
+  endpoint that auto-routes to the right domain via `intent.py`). Works today
+  with zero extra setup beyond what's already optional (`GEMINI_API_KEY`
+  improves phrasing; without it, responses show as the plain structured text,
+  same fallback the rest of the project uses).
+- **Voice input** — this is a farmer-facing voice agent, so the dashboard has
+  a real browser voice pipeline, not just typed chat:
+  - **Push-to-talk** — the mic button appears once `ASSEMBLYAI_API_KEY` is
+    set; tap, speak, tap again (or it auto-stops), transcribed via
+    `WS /voice` the same way `main.py`'s local pipeline transcribes speech.
+  - **Always-listening wakeword mode** — an opt-in toggle (continuous mic
+    access is never on by default) that runs your `.onnx` wakeword model(s)
+    **client-side** in the browser via `onnxruntime-web`, scoring audio
+    frames locally with no audio leaving the device until the wakeword
+    actually fires. Appears only once a `.onnx` file is actually present
+    under `agri_voice_agent/wakeword/models/` (served to the browser via a
+    `/wakeword-models/` static mount) — same fail-gracefully pattern as the
+    rest of this project.
+  - **Spoken replies** — voice-triggered answers are also read aloud via the
+    browser's built-in `speechSynthesis` (Web Speech API) — free, no new API
+    key, keeps the project's free-tier-only constraint.
+  - **Not yet tested against a real microphone, browser, or trained model**
+    — no `.onnx` wakeword files exist yet (same standing blocker as the
+    local pipeline), and no `ASSEMBLYAI_API_KEY` is configured in this dev
+    environment. The wakeword scoring function's model input/output
+    contract is also explicitly a placeholder (see `docs/build_log.md`) —
+    it assumes a single end-to-end `.onnx` model, which does NOT match
+    openWakeWord's real 3-stage architecture; verify/adjust once a real
+    trained model exists.
+- `GET /capabilities` tells the page what's actually usable (mic, wakeword
+  models, phrasing) so it never offers a control that would just fail.
+- **Location** — a blocking modal asks for the farm's location the first
+  time a weather-routed question comes up with none known yet (GPS
+  auto-detect, IP-based fallback, or manual entry — never asked again once
+  confirmed, remembered via `localStorage` across visits). Live-verified
+  with a real query (London, GB returned real London conditions).
 
 ## Project layout
 
@@ -193,7 +231,7 @@ docs/
 
 agri_voice_agent/
   farm_state.py       # shared cross-domain state
-  intent.py             # deterministic keyword routing -- "Hey Field" -> weather/crop, farmer dashboard chat
+  intent.py             # deterministic keyword routing -- "Hey Green" -> weather/crop, farmer dashboard chat
   llm_client.py        # Gemini free-tier wrapper
   config.py             # env/config loading
   asr.py                 # AssemblyAI streaming ASR wrapper
@@ -208,10 +246,10 @@ agri_voice_agent/
   wakeword/
     router.py           # multi-model ONNX wakeword routing (models dropped in by user)
   domains/
-    weather.py           # "Hey Field" -> weather (resolved via intent.py after wakeword)
-    crop.py               # "Hey Field" -> crop (resolved via intent.py after wakeword)
+    weather.py           # "Hey Green" -> weather (resolved via intent.py after wakeword)
+    crop.py               # "Hey Green" -> crop (resolved via intent.py after wakeword)
     crop_data.py           # fixed crop suitability lookup table
-    plant.py               # "Hey Plant" -- multi-turn diagnostic conversation
+    plant.py               # "Hey Doc" -- multi-turn diagnostic conversation
     plant_data.py           # symptom/cause framework + named tomato/onion diseases
   tests/
     test_weather_manual.py

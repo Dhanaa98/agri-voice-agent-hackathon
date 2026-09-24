@@ -19,11 +19,15 @@ domain specialist — but all three share one underlying farm-state context, so 
 from one domain are informed by the others. Not three disconnected features: one
 integrated agent with domain-routed entry points.
 
-- **"Hey Weather"** — current conditions and forecast-based guidance
-- **"Hey Crop"** — crop-suitability advice (what to plant, when)
-- **"Hey Plant"** — voice-only diagnostic conversation for suspected plant disease
+- **"Hey Green"** — current conditions/forecast guidance and crop-suitability advice
+  (what to plant, when); originally two separate wakewords ("Hey Weather"/"Hey Crop")
+  merged into one, since both are short single-shot questions a farmer asks without
+  first deciding which specialist they want — which one answers is resolved from the
+  words spoken after the wakeword fires, not by a separate phrase
+- **"Hey Doc"** — voice-only diagnostic conversation for suspected plant disease
   (no photo needed — narrows down a diagnosis through targeted follow-up questions,
-  the way a real agronomist would)
+  the way a real agronomist would); originally "Hey Plant", renamed for a friendlier
+  "plant doctor" framing
 
 ## Why multi-wakeword here (and not elsewhere)
 This project has three genuinely separable domains a real farmer would think of
@@ -88,7 +92,7 @@ mechanism that makes cross-domain reasoning real rather than decorative.
   resistant variety or delay planting."
 - Build days 3-5.
 
-### Domain agent 3: Plant disease diagnostic conversation ("Hey Plant") — PRIMARY FOCUS
+### Domain agent 3: Plant disease diagnostic conversation ("Hey Doc") — PRIMARY FOCUS
 This is the hardest part and the main differentiator. Gets the most build time
 (days 6-12).
 - Voice-only, multi-turn diagnostic flow: user describes a symptom, system asks
@@ -142,12 +146,14 @@ simplify Crop-suitability to a more basic static lookup rather than cutting a wh
 domain entirely.
 
 ## Demo script outline
-1. Say "Hey Weather" — get current conditions/forecast for a real location.
-2. Say "Hey Plant" — describe a real symptom (e.g., "leaves yellowing between the
+1. Say "Hey Green" — ask about current conditions/forecast for a real location.
+2. Say "Hey Doc" — describe a real symptom (e.g., "leaves yellowing between the
    veins"), let the system ask 1-2 targeted follow-ups, arrive at a diagnosis that
    explicitly references current humidity/rainfall as part of its reasoning.
-3. Say "Hey Crop" — ask for planting advice, show it factoring in both weather and the
-   disease just discussed (e.g., recommending a resistant variety or timing shift).
+3. Say "Hey Green" again — this time ask for planting advice, show it factoring in
+   both weather and the disease just discussed (e.g., recommending a resistant
+   variety or timing shift). Which domain (weather vs. crop) answers is resolved
+   from the words spoken, not a separate wakeword — see wakeword/router.py.
 4. Optionally: re-run step 2 with different injected weather conditions (e.g., "dry"
    vs. "humid") to visibly show the diagnosis shifting — proves cross-domain reasoning
    is real, not scripted.

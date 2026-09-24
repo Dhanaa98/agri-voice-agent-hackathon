@@ -13,7 +13,7 @@ Diseases directly relevant to the project's 5 supported crops (tomato, chili,
 rice, okra, onion) are marked with **(project crop)**. Every disease found in
 covered sources is cataloged, not only those 5, per the "document everything"
 instruction -- this document is intentionally broader than what's wired into
-the live "Hey Plant" voice agent (see `plant_data.py` for that narrower,
+the live "Hey Doc" voice agent (see `plant_data.py` for that narrower,
 runtime-facing subset).
 
 ## Sources
@@ -157,7 +157,7 @@ guide, that is not counted in the disease total above.
 
 ## Tomato (project crop)
 
-Named diseases actually used by "Hey Plant" (Fusarium wilt, Bacterial canker,
+Named diseases actually used by "Hey Doc" (Fusarium wilt, Bacterial canker,
 Western yellow blight virus) are defined in `plant_data.py`'s `NAMED_DISEASES`
 dict, sourced from the 1943 Montana bulletin -- not repeated here. Below are
 additional diseases and notes from the Agrios textbook that inform or
@@ -262,7 +262,7 @@ Shared entry with chili -- see the Chili section below for the full write-up (pa
 
 ## Chili / Chilli (project crop)
 
-Named diseases used by "Hey Plant" (Ripe fruit-rot and die-back/anthracnose,
+Named diseases used by "Hey Doc" (Ripe fruit-rot and die-back/anthracnose,
 Bacterial wilt, Phytophthora blight, Bacterial leaf spot, Powdery mildew,
 Southern blight) are defined in `plant_data.py`'s `NAMED_DISEASES` dict,
 sourced from the Agrios textbook (first two) and, added in a fourth
@@ -336,7 +336,7 @@ See the Okra section below for the shared full write-up. Note specific to chili:
 
 ## Rice (project crop)
 
-Named diseases used by "Hey Plant" (Brown spot/Helminthosporiosis, Blast,
+Named diseases used by "Hey Doc" (Brown spot/Helminthosporiosis, Blast,
 Sheath blight, Stem rot, Bacterial leaf blight, Kernel smut, Narrow brown
 leaf spot, Seedling blight and seed decay) are defined in `plant_data.py`'s
 `NAMED_DISEASES` dict, sourced from the Agrios textbook (Brown spot, Blast,
@@ -481,7 +481,7 @@ Wheat, rice, onion and maize are cited as non-host/poor-host crops that can be u
 
 ## Okra / Bhindi (project crop)
 
-Named diseases used by "Hey Plant" (Yellow vein mosaic, Root-knot nematode,
+Named diseases used by "Hey Doc" (Yellow vein mosaic, Root-knot nematode,
 Blossom and fruit blight) are defined in `plant_data.py`'s `NAMED_DISEASES`
 dict, sourced from the Agrios textbook (first two) and, added in a fourth
 extraction pass, the TAMU Plant Disease Handbook okra page,
@@ -517,7 +517,7 @@ The TAMU okra page also documents **Cotton Root Rot** (*Phymatotrichum omnivorum
 
 ## Onion (project crop)
 
-Named diseases used by "Hey Plant" (Fusarium bulb rot, Downy mildew/purple
+Named diseases used by "Hey Doc" (Fusarium bulb rot, Downy mildew/purple
 blotch, Smut) are defined in `plant_data.py`'s `NAMED_DISEASES` dict, sourced
 from the 1943 Montana bulletin -- not reproduced here. Below are additional
 notes from the Agrios textbook and, added in a fourth extraction pass, the

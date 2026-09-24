@@ -19,15 +19,22 @@ republished as new pages when the underlying project data/architecture changes.
   (not a fresh `file_path`) to update in place.
 
 - **Agri Voice Agent Layout** — https://claude.ai/artifact/2KDxhdNsyR6hRUZgCb1gPE
-  Architecture diagram + file-tree map of the project. Now stale on THREE
-  points as of 2026-09-17 and needs regenerating before it's shown to
-  anyone: (1) it still shows three wakewords ("Hey Weather"/"Hey Crop"/
-  "Hey Plant") — the real system is now two ("Hey Field" covering both
-  Weather and Crop via `intent.py`'s `resolve_field_domain()`, plus "Hey
-  Plant"); (2) it doesn't reflect that the farmer-facing dashboard routes
+  Architecture diagram + file-tree map of the project. Now stale on FOUR
+  points as of 2026-09-21 (plus a further phrase change on 2026-09-23) and
+  needs regenerating before it's shown to anyone: (1) it still shows three
+  wakewords ("Hey Weather"/"Hey Crop"/"Hey Plant") — the real system is now
+  two ("Hey Green" covering both Weather and Crop via `intent.py`'s
+  `resolve_field_domain()`, plus "Hey Doc" for plant diagnosis, renamed
+  from "Hey Plant" on 2026-09-21 -- internally still the "plant"
+  domain/filename, only the spoken phrase changed; the Weather+Crop phrase
+  itself later changed again, "Hey Field" -> "Hey Green" on 2026-09-23,
+  internally still the "field" domain/filename); (2) it doesn't reflect that the farmer-facing dashboard routes
   via a single `/chat` endpoint with `intent.py` picking the agent, not
   three separate buttons/endpoints; (3) `FarmState` is now a list of
-  `FarmProfile` entries (multi-farm support) rather than one flat object.
+  `FarmProfile` entries (multi-farm support) rather than one flat object;
+  (4) doesn't reflect the real browser-side openWakeWord 3-stage detection
+  pipeline (melspectrogram -> embedding -> classifier, all client-side via
+  onnxruntime-web) now backing both wakewords in the farmer dashboard.
   Regenerate and republish to the same `url` next time this project's
   architecture is touched or explained to someone else.
 

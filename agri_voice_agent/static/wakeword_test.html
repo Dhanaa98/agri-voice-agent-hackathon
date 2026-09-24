@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wakeword Test</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js"></script>
+<style>
+  body {
+    margin: 0;
+    padding: 24px 18px;
+    background: #101512;
+    color: #eef1ee;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 1.2rem; margin: 0 0 4px; }
+  p.sub { color: #93a09a; font-size: 0.88rem; margin: 0 0 22px; }
+
+  #startBtn {
+    width: 100%;
+    padding: 14px;
+    border-radius: 12px;
+    border: none;
+    background: #3f8459;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    margin-bottom: 20px;
+  }
+  #startBtn:disabled { background: #444; cursor: not-allowed; }
+
+  .status {
+    font-size: 0.85rem;
+    color: #93a09a;
+    margin-bottom: 16px;
+    min-height: 20px;
+  }
+
+  .score-panel {
+    background: #1c2320;
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 14px;
+  }
+  .score-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #93a09a;
+    margin-bottom: 8px;
+  }
+  .score-value {
+    font-size: 2.4rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 10px;
+  }
+  .score-value.hot { color: #d99a4c; }
+  .score-value.fired { color: #5fac7f; }
+
+  .bar-track {
+    height: 10px;
+    border-radius: 999px;
+    background: #2c3630;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    background: #3f8459;
+    width: 0%;
+    transition: width 0.08s linear;
+  }
+  .bar-fill.hot { background: #d99a4c; }
+  .bar-fill.fired { background: #5fac7f; }
+
+  .threshold-mark {
+    position: relative;
+    height: 4px;
+  }
+  .threshold-mark::after {
+    content: "";
+    position: absolute;
+    left: 20%;
+    top: -14px;
+    width: 2px;
+    height: 10px;
+    background: #6d7a73;
+  }
+
+  #log {
+    font-family: "SF Mono", "Consolas", monospace;
+    font-size: 0.78rem;
+    color: #93a09a;
+    background: #16201a;
+    border-radius: 10px;
+    padding: 10px 12px;
+    max-height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+  .fire-line { color: #5fac7f; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎙️ Wakeword Detection Test</h1>
+  <p class="sub">
+    Standalone test of the client-side openWakeWord pipeline — no chat, no ASR, no API keys needed.
+    Watch the live score as you speak. Threshold is 0.2 (marked on the bar).
+  </p>
+
+  <div style="margin-bottom:16px;">
+    <label for="modelSelect" style="display:block;font-size:0.78rem;color:#93a09a;margin-bottom:6px;">Classifier to test</label>
+    <select id="modelSelect" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid #2c3630;background:#1c2320;color:#eef1ee;font-size:0.9rem;">
+      <option value="hey_jarvis">hey_jarvis.onnx — official openWakeWord reference model ("Hey Jarvis")</option>
+      <option value="field">field.onnx — your trained model ("Hey Green")</option>
+      <option value="hey_doc">hey_doc.onnx — your trained model ("Hey Doc")</option>
+    </select>
+  </div>
+
+  <button id="startBtn" type="button">Start listening</button>
+  <div class="status" id="status">Click start, then allow microphone access.</div>
+
+  <div class="score-panel">
+    <div class="score-label">Mic input level (proves audio is actually being captured)</div>
+    <canvas id="micCanvas" width="480" height="60" style="width:100%;height:60px;background:#0d1210;border-radius:8px;display:block;"></canvas>
+    <div style="font-size:0.72rem;color:#93a09a;margin-top:6px;" id="micLevelText">No audio yet</div>
+  </div>
+
+  <div class="score-panel">
+    <div class="score-label" id="scoreLabel">Live confidence — hey_jarvis.onnx</div>
+    <div class="score-value" id="scoreValue">0.000</div>
+    <div class="bar-track"><div class="bar-fill" id="barFill"></div></div>
+    <div class="threshold-mark"></div>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script>
+// ============================================================
+// Same verified pipeline as farmer.html's voice module -- see that
+// file's comments for the full explanation of each stage/constant.
+// Kept as a literal copy (not shared via import) so this test page has
+// zero dependency on the main dashboard's other code, deliberately --
+// this page exists to test JUST the wakeword detection in isolation.
+// ============================================================
+
+const WAKE_CHUNK_SAMPLES = 1280;
+const WAKE_MELSPEC_WINDOW = 76;
+const WAKE_MELSPEC_STRIDE = 8;
+const WAKE_EMBEDDING_WINDOW = 16;
+const WAKE_THRESHOLD = 0.2;
+const PCM_SAMPLE_RATE = 16000;
+
+// Downsamples a Float32Array of mic samples (at the AudioContext's native
+// rate) to 16-bit PCM int16 samples at 16kHz -- openWakeWord's models are
+// trained on 16kHz audio, so feeding them anything else (most devices
+// default to 44100/48000Hz) silently produces wrong acoustic features.
+function floatTo16kPcm(float32, inputSampleRate) {
+  const ratio = inputSampleRate / PCM_SAMPLE_RATE;
+  const outLength = Math.floor(float32.length / ratio);
+  const out = new Int16Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const srcIndex = Math.floor(i * ratio);
+    let sample = Math.max(-1, Math.min(1, float32[srcIndex]));
+    out[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return out;
+}
+
+function makeWakewordFeatureState() {
+  return {
+    rawBuffer: [],
+    accumulatedSamples: 0,
+    melspecBuffer: new Array(WAKE_MELSPEC_WINDOW).fill(null).map(() => new Array(32).fill(1)),
+    featureBuffer: [],
+  };
+}
+
+async function runMelspectrogram(session, int16Window) {
+  const floatSamples = Float32Array.from(int16Window);
+  const tensor = new ort.Tensor("float32", floatSamples, [1, floatSamples.length]);
+  const results = await session.run({ input: tensor });
+  const output = results.output;
+  const dims = output.dims;
+  // REAL runtime shape is [1, 1, timeSteps, 32] (confirmed via a direct
+  // Python onnxruntime call -- NOT [timeSteps, 1, ?, 32] as the model's
+  // declared dynamic-shape signature suggested, which is what an earlier
+  // version of this code wrongly assumed: it read dims[0] as timeSteps
+  // when dims[0] is actually always the batch size (1), silently
+  // extracting only 1 row per call instead of the real ~8, and with a
+  // flattening formula that didn't match this tensor's actual memory
+  // layout at all -- the root cause of scores being stuck at/near 0.
+  // Squeeze out every size-1 dimension (mirroring the Python reference's
+  // np.squeeze(outputs[0])) to get the real [timeSteps, melBins] shape
+  // regardless of which position the batch/singleton dims land in.
+  const meaningfulDims = dims.filter((d) => d !== 1);
+  const timeSteps = meaningfulDims[0] ?? 1;
+  const melBins = meaningfulDims[meaningfulDims.length - 1] ?? 32;
+  const data = output.data;
+  const rows = [];
+  for (let t = 0; t < timeSteps; t++) {
+    const row = new Array(melBins);
+    for (let m = 0; m < melBins; m++) row[m] = data[t * melBins + m] / 10 + 2;
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function runEmbedding(session, melspecWindowRows) {
+  const flat = new Float32Array(WAKE_MELSPEC_WINDOW * 32);
+  for (let i = 0; i < WAKE_MELSPEC_WINDOW; i++) {
+    for (let j = 0; j < 32; j++) flat[i * 32 + j] = melspecWindowRows[i][j];
+  }
+  const tensor = new ort.Tensor("float32", flat, [1, WAKE_MELSPEC_WINDOW, 32, 1]);
+  const results = await session.run({ input_1: tensor });
+  const outName = session.outputNames[0];
+  return Array.from(results[outName].data);
+}
+
+async function runClassifier(session, last16Embeddings) {
+  const flat = new Float32Array(WAKE_EMBEDDING_WINDOW * 96);
+  for (let i = 0; i < WAKE_EMBEDDING_WINDOW; i++) {
+    for (let j = 0; j < 96; j++) flat[i * 96 + j] = last16Embeddings[i][j];
+  }
+  const tensor = new ort.Tensor("float32", flat, [1, WAKE_EMBEDDING_WINDOW, 96]);
+  const inputName = session.inputNames[0];
+  const results = await session.run({ [inputName]: tensor });
+  const outName = session.outputNames[0];
+  return results[outName].data[0];
+}
+
+async function processWakewordChunk(models, state, newInt16Samples) {
+  // REAL BUG FOUND AND FIXED (2026-09-21): this used to require
+  // accumulatedSamples to land on an EXACT multiple of WAKE_CHUNK_SAMPLES
+  // (1280) before processing anything. That works by luck when the caller
+  // always hands over exactly-1280-sample chunks, but breaks completely
+  // once audio goes through resampling first (floatTo16kPcm from a
+  // non-16kHz native rate) -- resampled chunk sizes are irregular
+  // (e.g. a 4096-sample callback at 48kHz resamples to 1365.33 -> 1365
+  // samples, and repeatedly accumulating 1365 NEVER lands on a multiple
+  // of 1280, confirmed by direct calculation: 0 hits in 200 callbacks).
+  // The pipeline would silently never produce a single score. Fixed by
+  // processing WHOLE 1280-sample chunks out of the accumulator and
+  // carrying any leftover forward to the next call, mirroring
+  // openWakeWord's own reference implementation's raw_data_remainder
+  // handling in AudioFeatures._streaming_features -- this is what makes
+  // it robust to any resampled chunk size, not just conveniently-round
+  // native audio buffer sizes.
+  state.rawBuffer.push(...newInt16Samples);
+  state.accumulatedSamples += newInt16Samples.length;
+
+  if (state.accumulatedSamples < WAKE_CHUNK_SAMPLES) {
+    return null;
+  }
+  const remainder = state.accumulatedSamples % WAKE_CHUNK_SAMPLES;
+  const nSamples = state.accumulatedSamples - remainder;
+  // Process only the whole-chunk region -- exclude any trailing remainder
+  // samples already pushed into rawBuffer this call but not yet part of a
+  // complete WAKE_CHUNK_SAMPLES unit, so they aren't treated as melspec
+  // context ahead of when they're actually due to be processed.
+  const processedEnd = state.rawBuffer.length - remainder;
+  const windowStart = Math.max(0, processedEnd - nSamples - 480);
+  const window = state.rawBuffer.slice(windowStart, processedEnd);
+  const newMelRows = await runMelspectrogram(models.melspec, window);
+  state.melspecBuffer.push(...newMelRows);
+  if (state.melspecBuffer.length > 970) state.melspecBuffer = state.melspecBuffer.slice(-970);
+
+  const nNewChunks = nSamples / WAKE_CHUNK_SAMPLES;
+  for (let i = nNewChunks - 1; i >= 0; i--) {
+    let endIdx = -WAKE_MELSPEC_STRIDE * i;
+    endIdx = endIdx === 0 ? state.melspecBuffer.length : state.melspecBuffer.length + endIdx;
+    const startIdx = endIdx - WAKE_MELSPEC_WINDOW;
+    if (startIdx < 0) continue;
+    const windowRows = state.melspecBuffer.slice(startIdx, endIdx);
+    if (windowRows.length === WAKE_MELSPEC_WINDOW) {
+      const embedding = await runEmbedding(models.embedding, windowRows);
+      state.featureBuffer.push(embedding);
+    }
+  }
+  if (state.featureBuffer.length > 120) state.featureBuffer = state.featureBuffer.slice(-120);
+
+  // Trim rawBuffer but KEEP the trailing remainder samples (not yet part
+  // of a whole chunk) plus enough processed history for the next call's
+  // melspec context window -- losing the remainder here would silently
+  // drop audio instead of carrying it forward.
+  state.rawBuffer = state.rawBuffer.slice(-Math.max(WAKE_CHUNK_SAMPLES + 480, 4000) - remainder);
+  state.accumulatedSamples = remainder;
+
+  if (state.featureBuffer.length < WAKE_EMBEDDING_WINDOW) return null;
+  const last16 = state.featureBuffer.slice(-WAKE_EMBEDDING_WINDOW);
+  return runClassifier(models.classifier, last16);
+}
+
+// ---------- Test page UI wiring ----------
+
+const els = {
+  startBtn: document.getElementById("startBtn"),
+  status: document.getElementById("status"),
+  scoreValue: document.getElementById("scoreValue"),
+  scoreLabel: document.getElementById("scoreLabel"),
+  barFill: document.getElementById("barFill"),
+  log: document.getElementById("log"),
+  modelSelect: document.getElementById("modelSelect"),
+  micCanvas: document.getElementById("micCanvas"),
+  micLevelText: document.getElementById("micLevelText"),
+};
+
+const micCtx = els.micCanvas.getContext("2d");
+
+// Draws the raw waveform of one audio callback's samples and reports peak
+// amplitude -- runs independently of wakeword scoring so it's possible to
+// tell "mic isn't capturing anything" apart from "mic works but the
+// wakeword pipeline isn't detecting", which look identical from the
+// score number alone (both show 0.000 forever).
+function drawMicLevel(float32Samples) {
+  const w = els.micCanvas.width;
+  const h = els.micCanvas.height;
+  micCtx.fillStyle = "#0d1210";
+  micCtx.fillRect(0, 0, w, h);
+  micCtx.strokeStyle = "#5fac7f";
+  micCtx.lineWidth = 1.5;
+  micCtx.beginPath();
+  const step = Math.max(1, Math.floor(float32Samples.length / w));
+  let peak = 0;
+  for (let x = 0; x < w; x++) {
+    const idx = x * step;
+    const sample = float32Samples[idx] || 0;
+    peak = Math.max(peak, Math.abs(sample));
+    const y = h / 2 - sample * (h / 2);
+    if (x === 0) micCtx.moveTo(x, y);
+    else micCtx.lineTo(x, y);
+  }
+  micCtx.stroke();
+
+  const pct = Math.round(peak * 100);
+  els.micLevelText.textContent = peak > 0.01
+    ? `Peak level: ${pct}% — audio IS being captured`
+    : `Peak level: ${pct}% — silence or no audio reaching the pipeline`;
+}
+
+function logLine(text, fired) {
+  const line = document.createElement("div");
+  if (fired) line.className = "fire-line";
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+  els.log.appendChild(line);
+  els.log.scrollTop = els.log.scrollHeight;
+}
+
+let fireResetTimer = null;
+let lastLoggedAt = 0;
+let scoreHistory = [];
+
+function updateScoreDisplay(score) {
+  if (Number.isNaN(score)) {
+    logLine("WARNING: score is NaN -- pipeline is producing invalid numbers, not just a low score.", false);
+    return;
+  }
+
+  scoreHistory.push(score);
+  if (scoreHistory.length > 500) scoreHistory.shift();
+
+  const pct = Math.min(100, score * 100);
+  els.scoreValue.textContent = score.toFixed(4);
+  els.barFill.style.width = `${pct}%`;
+
+  const fired = score >= WAKE_THRESHOLD;
+  els.scoreValue.classList.toggle("fired", fired);
+  els.barFill.classList.toggle("fired", fired);
+  const hot = !fired && score >= 0.15;
+  els.scoreValue.classList.toggle("hot", hot);
+  els.barFill.classList.toggle("hot", hot);
+
+  if (fired) {
+    logLine(`FIRED — score ${score.toFixed(4)}`, true);
+    clearTimeout(fireResetTimer);
+    fireResetTimer = setTimeout(() => {
+      els.scoreValue.classList.remove("fired");
+      els.barFill.classList.remove("fired");
+    }, 1500);
+  } else {
+    // Log every score, not just fires -- otherwise a score that's always
+    // exactly 0 (a real bug) is indistinguishable from one that's just
+    // low (normal, expected most of the time) since only the fast-moving
+    // big number shows it. Throttled to ~1/second so this doesn't flood.
+    const now = Date.now();
+    if (now - lastLoggedAt > 1000) {
+      lastLoggedAt = now;
+      const recent = scoreHistory.slice(-12);
+      const max = Math.max(...recent);
+      const allZero = recent.every((s) => s === 0);
+      logLine(
+        allZero
+          ? `score is EXACTLY 0 for the last ${recent.length} frames -- likely a pipeline bug, not just low confidence`
+          : `score ${score.toFixed(4)} (recent max: ${max.toFixed(4)})`
+      );
+    }
+  }
+}
+
+async function start() {
+  els.startBtn.disabled = true;
+  els.status.textContent = "Loading models…";
+
+  // onnxruntime-web needs to be told where to fetch its .wasm binaries
+  // from, and this version only ships the "threaded" WASM binary (no
+  // plain single-threaded variant exists in the package at all -- checked
+  // the actual published file list). The threaded binary needs either
+  // SharedArrayBuffer + cross-origin-isolation response headers
+  // (Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy, which this
+  // simple FastAPI static server doesn't send) or numThreads forced to 1
+  // to fall back to single-threaded execution using that same binary --
+  // forcing numThreads=1 is simpler than adding those headers project-
+  // wide, and wakeword scoring on one audio frame isn't perf-sensitive
+  // enough to need multi-threading anyway. jsDelivr (not cdnjs) is used
+  // here because cdnjs's mirror of this package is missing the .mjs
+  // module files onnxruntime-web's WASM loader dynamically imports --
+  // confirmed via direct curl checks (cdnjs 404s on ort-wasm-simd-
+  // threaded.mjs; jsDelivr serves it correctly).
+  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/";
+  ort.env.wasm.numThreads = 1;
+
+  const modelName = els.modelSelect.value;
+  els.modelSelect.disabled = true;
+  els.scoreLabel.textContent = `Live confidence — ${modelName}.onnx`;
+
+  let melspec, embedding, classifier;
+  try {
+    melspec = await ort.InferenceSession.create("/wakeword-models/melspectrogram.onnx");
+    embedding = await ort.InferenceSession.create("/wakeword-models/embedding_model.onnx");
+    classifier = await ort.InferenceSession.create(`/wakeword-models/${modelName}.onnx`);
+  } catch (e) {
+    els.status.textContent = `Failed to load models: ${e.message}`;
+    els.startBtn.disabled = false;
+    els.modelSelect.disabled = false;
+    return;
+  }
+  logLine(`Models loaded OK (classifier: ${modelName}.onnx).`);
+
+  const models = { melspec, embedding, classifier };
+  const state = makeWakewordFeatureState();
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (e) {
+    els.status.textContent = `Microphone access denied: ${e.message}`;
+    els.startBtn.disabled = false;
+    return;
+  }
+  logLine("Microphone access granted.");
+  const wakePhrase = modelName === "hey_jarvis" ? "Hey Jarvis" : modelName === "hey_doc" ? "Hey Doc" : "Hey Green";
+  els.status.textContent = `Listening — say "${wakePhrase}" naturally, at normal volume.`;
+
+  // REAL BUG FOUND AND FIXED HERE (2026-09-21): AudioContext defaults to
+  // the device's native sample rate -- typically 44100Hz or 48000Hz on
+  // virtually all real hardware, never 16000Hz -- and the previous version
+  // of this code fed that raw audio straight into the wakeword pipeline
+  // with ZERO resampling. openWakeWord's models are trained on 16kHz
+  // audio; feeding them audio running ~2.75-3x too fast destroys the
+  // frequency content they rely on. This is why scores were "reactive but
+  // never confident" (0.01-0.09 while speaking the wakeword) instead of
+  // either fully silent or a clean high score -- some coarse energy
+  // correlation survived, but the actual acoustic features were wrong.
+  // Requesting sampleRate: 16000 on the AudioContext constructor asks the
+  // browser to resample at the hardware/driver level when supported
+  // (Chrome/Firefox generally honor this); logged below so it's visible
+  // whether the browser actually granted it.
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: PCM_SAMPLE_RATE });
+  logLine(`AudioContext sample rate: ${ctx.sampleRate}Hz (requested ${PCM_SAMPLE_RATE}Hz)`);
+  const source = ctx.createMediaStreamSource(stream);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  source.connect(processor);
+  processor.connect(ctx.destination);
+
+  let busy = false;
+  processor.addEventListener("audioprocess", async (event) => {
+    const input = event.inputBuffer.getChannelData(0);
+
+    // Drawn on EVERY callback, independent of the wakeword pipeline's
+    // busy-guard below -- if the waveform moves but the score never does,
+    // the mic is fine and the bug is in the scoring pipeline; if the
+    // waveform stays flat, the mic itself isn't delivering audio (wrong
+    // input device selected, permission silently denied, muted mic, etc).
+    drawMicLevel(input);
+
+    if (busy) return;
+    busy = true;
+    try {
+      // Still resample explicitly even after requesting 16000Hz on the
+      // context -- some browsers/devices silently ignore that request and
+      // keep running at their native rate, so this is the real safety net,
+      // not the constructor option alone.
+      const int16Samples = floatTo16kPcm(input, ctx.sampleRate);
+      const score = await processWakewordChunk(models, state, int16Samples);
+      if (score != null) updateScoreDisplay(score);
+    } catch (e) {
+      console.error("[wakeword-test] frame error", e);
+    } finally {
+      busy = false;
+    }
+  });
+
+  logLine("Pipeline running. Waiting for buffers to warm up (~1.3s of audio)…");
+}
+
+els.startBtn.addEventListener("click", start);
+</script>
+</body>
+</html>

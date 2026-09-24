@@ -4,6 +4,422 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Wakeword phrase changed again: "Hey Field" -> "Hey Green" for the
+  merged Weather+Crop wakeword (2026-09-23).** User trained and added a
+  new `.onnx` model (`Hey_green.onnx`, later copied over `field.onnx` so
+  the router picks it up under the existing filename) and asked to
+  replace "Hey Field" entirely, not add it as an alternative phrase.
+  Verified the new model is a genuinely distinct trained model (not an
+  accidental duplicate) via MD5 checksum diff against the old
+  `field.onnx` and by feeding both an identical fake embedding input and
+  confirming different output confidence scores; also confirmed matching
+  I/O tensor shapes (`[1,16,96]` in, `[1,1]` out) against the established
+  classifier contract. Same discipline as the earlier "Hey Plant" ->
+  "Hey Doc" rename: the internal "field" domain key/filename convention
+  (`field.onnx`, `resolve_field_domain()`, `DOMAIN_AGENTS["field"]`-style
+  references, etc.) deliberately stayed stable -- only the spoken/display
+  phrase changed, this time for the second time (the domain was originally
+  two separate wakewords "Hey Weather"/"Hey Crop", merged into "Hey
+  Field" on 2026-09-17, now "Hey Green"). Updated user-facing strings and
+  docstrings across `wakeword/router.py`, `audio_input.py`,
+  `farmer_server.py`, `intent.py`, `main.py`, `static/farmer.html`,
+  `static/index.html`, `static/wakeword_test.html`, `README.md`,
+  `AGRI_VOICE_AGENT_BRIEF.md`, `docs/project_overview.md`, and
+  `docs/artifacts.md`'s stale-diagram note. Historical/past-tense
+  references describing what used to be true (e.g. router.py's note that
+  the phrase "started as 'Hey Field', then changed to 'Hey Green'", or
+  this build log's own dated entries) were deliberately left alone --
+  only current-state text was updated. Incidentally caught and fixed two
+  unrelated stale doc references while touching the same files: `main.py`
+  still said `"Hey Plant" stays separate` (should have said "Hey Doc",
+  leftover from the earlier rename pass) and `farmer_server.py`'s
+  `/wakeword-test` docstring still cited "the 0.5 threshold" when
+  `WAKE_THRESHOLD` had already been lowered to 0.2 in an earlier session.
+- **Fixed: location modal was auto-triggering a browser GPS permission
+  prompt instead of showing its text input first (2026-09-21).** User
+  reported live: the location modal went straight to a browser
+  location-access prompt with no typing option visible. Root cause:
+  `noteAnsweredDomain()` and `setActiveView()` both called
+  `autoDetectLocation()` unconditionally whenever a weather answer needed
+  a location or the farmer switched to the Weather sidebar section --
+  and `autoDetectLocation()` immediately calls
+  `navigator.geolocation.getCurrentPosition()`, which triggers the
+  browser's native GPS permission dialog with zero farmer action. This
+  predates today's General/per-domain redesign (carried over from an
+  earlier single-domain design where silent auto-fill made more sense)
+  but only became reachable/visible once the location modal's own flow
+  was being tested end-to-end for the first time this session.
+  Fixed by removing both automatic call sites entirely -- GPS/IP location
+  detection is now ONLY ever triggered by the farmer explicitly clicking
+  the location modal's own "📡 Detect my location automatically" button
+  (a separate, already-correct opt-in handler on `modalDetectBtn` that
+  was untouched by this fix). The modal's text input is focused by
+  default when the modal opens (`showLocationModal()`, unchanged) --
+  typing a location is now unambiguously the primary path, matching what
+  the user asked for. Removed the now-fully-dead `autoDetectLocation()`
+  function rather than leave an orphaned unused function behind.
+- **General chat area + per-domain filed history + always-on voice via a
+  startup modal (2026-09-21).** First real end-to-end wakeword-to-response
+  test surfaced four issues at once, live-tested by the user: (1) "what is
+  the weather" got transcribed by AssemblyAI as "what is the video" --
+  confirmed as normal ASR variance, not a code bug, no fix applicable;
+  (2) the resulting reply answered as if a land/crop question had been
+  asked -- confirmed as the CORRECT, expected consequence of (1): "what is
+  the video" matches no domain keyword, so `route_message()` correctly
+  fell back to whichever domain was last active ("crop", the old default)
+  per its own documented design, not a routing bug; (3) dashboard opened
+  on "Crop" by default instead of somewhere neutral; (4) no prompt on
+  startup for enabling voice, and the location modal never fired in that
+  test session because the only weather-like message was misrouted to
+  crop before ever really reaching Weather.
+  Rather than patch each symptom individually, user asked for a real
+  redesign: **(a)** dashboard now opens to a "General" area, not any one
+  domain -- shows a combined live feed of every message regardless of
+  which agent answered. **(b)** every domain (Weather/Crop/Plant Health)
+  now has its OWN filed history a farmer can click into from the sidebar
+  and see just that domain's past conversation -- the same message
+  appears in both General (always) and its matching domain section
+  (filed automatically by whichever domain actually answered, not by
+  which section was open when it was asked). **(c)** no wakeword
+  toggle button anymore -- voice listening starts from a ONE-TIME "Enable
+  voice" modal shown automatically on page load (once mic_available AND
+  at least one wakeword model are both confirmed via /capabilities, so
+  the modal never offers a control that would just fail), then runs
+  continuously for the rest of the tab's session with no further farmer
+  action. This is still bounded by a hard browser rule explained to the
+  user directly: NO webpage can access a microphone without one explicit
+  user gesture, ever -- the modal's button click IS that unavoidable one
+  gesture, not a design choice that could be removed. **(d)** the
+  location-modal trigger was decoupled from "which section is open"
+  (the actual bug behind issue 4) -- it's now driven purely by
+  `noteAnsweredDomain()`, which fires whenever Weather specifically
+  ANSWERS a question with no confirmed location, regardless of whether
+  General, Crop, or any other section happens to be the visible view at
+  that moment.
+  Implementation: `farmer.html`'s message model was rebuilt from
+  "append DOM nodes directly, no data behind them" to a real
+  `state.messages` array (`{kind, domain, text, extra}` per entry) with
+  `renderMessages()` filtering by `state.activeView` and rebuilding the
+  visible log -- `addBubble()` replaced by `addMessage()`, sidebar nav
+  buttons are real `<button>`s again (`data-view` instead of the old
+  `data-domain`) driving `setActiveView()`, which ONLY changes what's
+  displayed, never how a message routes/gets answered (routing stays
+  100% server-side via `route_message()`/`intent.py`, untouched). A
+  farmer's own "you" message is tagged with `domain: null` when sent
+  (routing isn't known yet) and retroactively updated to the real
+  answering domain once the reply arrives, so it files correctly into
+  that domain's section without needing two render passes. Added a
+  `general` entry to `DOMAIN_META`. The wake-toggle `<button>` became a
+  passive `<span id="wake-indicator">` status readout (still reuses the
+  `.wake-toggle` CSS class, just no longer clickable) -- new
+  `maybeShowEnableVoiceModal()`/`hideEnableVoiceModal()` control the new
+  startup modal, called from inside `loadCapabilities()` itself (not a
+  separate un-awaited call after it) so it only fires once capabilities
+  are actually known, not racing ahead of that fetch.
+  **Real latent bug caught and fixed while touching this code, unrelated
+  to the redesign itself:** `loadCapabilities()`'s per-nav-button
+  "unavailable" styling loop still read `btn.dataset.domain`, which
+  stopped existing when nav buttons were converted to `data-view` in an
+  EARLIER session (the single-chat-routing redesign) -- meaning the
+  "Not set up yet" unavailable-domain styling had been silently broken
+  (always reading `undefined`) since that earlier change and nobody
+  had noticed. Fixed as part of this pass since the same loop was being
+  touched anyway.
+  Verified: full Node `--check` parse of the entire extracted
+  `<script>` block confirms valid syntax (not just brace-counting, which
+  can false-positive on prose parentheses inside comments -- caught
+  exactly one such false positive this session and correctly identified
+  it as non-code before trusting the real parser instead); live `/chat`
+  round-trip against the running server confirmed unchanged backend
+  behavior; page loads with all new DOM elements (data-view attributes,
+  enable-voice-modal, General nav entry) present.
+  **Not yet re-tested with a real microphone/voice session** after this
+  redesign -- the previous end-to-end test (the one that surfaced these
+  four issues) predates all of today's changes; next session should
+  redo that full wakeword-to-response test against the NEW flow
+  specifically (does the enable-voice modal actually appear and work,
+  does per-domain filing look right, does the location modal correctly
+  fire now when a real weather answer needs it).
+- **Note for future retraining: `field.onnx`/`hey_doc.onnx` seem to react
+  more to synthetic/TTS-generated voice than real spoken voice
+  (2026-09-21).** User's own observation while live-testing both models
+  on the wakeword test page -- confirmed both are genuinely distinct
+  trained models (different checksums, different scores on identical
+  input, verified this session), so this isn't a duplicate-file issue,
+  it's a data/training characteristic. Likely cause: if the training
+  pipeline leaned on TTS-generated audio for speed/volume (a common
+  wakeword-training shortcut), the model can overfit to synthetic-voice
+  acoustic characteristics and under-generalize to real human speech
+  variation (accent, mic quality, background noise, prosody). Not
+  something to fix in this codebase -- it's a model-training concern on
+  the user's end, not a pipeline bug (the inference pipeline itself was
+  independently verified correct against real human-voice ground-truth
+  audio, alexa_test.wav, earlier this session). **Flagged for whenever
+  the user retrains:** include a healthy proportion of real recorded
+  human speech (ideally from multiple speakers/accents/mic conditions),
+  not synthetic-only, in the training set.
+- **"Hey Plant" renamed to "Hey Doc" (display name only, 2026-09-21).**
+  Came out of team-naming brainstorming for the hackathon submission --
+  user wanted a more distinctive/friendly wakeword pairing with "Hey
+  Field". Explicitly scoped as DISPLAY-NAME-ONLY this pass: every
+  user-facing string (code comments/docstrings describing current
+  behavior, README.md, AGRI_VOICE_AGENT_BRIEF.md, plant_pathology_
+  reference.md, farmer.html's voice-status text and wakeword label
+  function, index.html's empty-state hint, docs/project_overview.md,
+  docs/artifacts.md's stale-diagram note) now says "Hey Doc" instead of
+  "Hey Plant". The INTERNAL domain key/filename convention deliberately
+  stayed as "plant" (`plant.onnx`, `DOMAIN_AGENTS["plant"]`, `plant.py`,
+  farm_state's domain strings, etc.) -- same pattern "Hey Green" already
+  uses internally (domains are still literally "weather"/"crop", not a
+  "field" domain). Historical/past-tense references in this build log
+  and in code comments describing what USED to be true (e.g. "originally
+  three wakewords: Hey Weather/Hey Crop/Hey Plant") were deliberately
+  left saying "Hey Plant" since they're accurately describing a past
+  state, not the current one.
+  **User explicitly flagged mid-session that this needs a FULL rename
+  later** -- i.e. eventually also renaming the internal "plant" domain
+  key/`plant.onnx` filename convention itself, not just the spoken
+  phrase/display strings. Not done in this pass (would touch working
+  routing code -- DOMAIN_AGENTS dicts in main.py/farmer_server.py,
+  wakeword/router.py's model-filename lookup, farm_state persisted data
+  shape -- for no functional benefit today), but recorded here as a
+  known, explicitly-requested follow-up. When doing that fuller rename:
+  check whether any already-saved `farm_state.json` / trained
+  `plant.onnx` files need to be migrated/renamed alongside the code, and
+  search for "plant" case-insensitively across the whole codebase rather
+  than just grepping for "Hey Plant" (the internal key appears in many
+  more places than the display string did).
+- **Real openWakeWord 3-stage pipeline implemented and VERIFIED against
+  the user's actual trained model + the official shared feature models
+  (2026-09-21).** User provided their real trained wakeword classifier
+  (`hey_field.onnx`, later renamed to `field.onnx` to match what the
+  router/static mount expect). Inspected its actual ONNX input/output
+  shapes with `onnxruntime` before writing any code: input
+  `onnx::Flatten_0` shaped `[1, 16, 96]`, output `39` shaped `[1, 1]` --
+  this is unambiguously openWakeWord's classifier stage (16 stacked
+  embeddings x 96 features each), confirming the 3-stage architecture
+  deferred in the 2026-09-19 entry below is now actually needed, not
+  hypothetical. Asked the user directly whether to build the real 3-stage
+  pipeline now or just rename the file and leave the placeholder --
+  **user chose to build it for real.**
+  Researched the exact algorithm from openWakeWord's own source before
+  porting anything (`gh api` fetches of `openwakeword/utils.py` and
+  `model.py` from the dscripka/openWakeWord repo, not guessed): the
+  `AudioFeatures._streaming_features`/`_streaming_melspectrogram`/
+  `_get_embeddings` methods, which fixed the exact constants a correct
+  port needs -- 1280-sample (80ms) processing chunks, 480 samples
+  (160*3) of melspec leading context, a 76-frame melspectrogram window
+  with an 8-frame stride between embedding computations, a 16-embedding
+  sliding window for the classifier, and the `x/10 + 2` melspectrogram
+  transform (not invented -- it's what makes the ONNX melspec model's
+  output numerically match the original TensorFlow model it was
+  converted from).
+  Downloaded openWakeWord's official shared feature-extraction models
+  (`melspectrogram.onnx`, `embedding_model.onnx` -- same two files work
+  for ANY openWakeWord classifier, not something to train) from
+  `github.com/dscripka/openWakeWord/releases/download/v0.5.1/`, verified
+  both load as valid ONNX with the expected shapes chaining correctly
+  into each other and into the user's real `field.onnx` (melspec:
+  raw audio -> `[time,1,?,32]`; embedding: `[N,76,32,1]` ->
+  `[N,1,1,96]`; classifier: `[1,16,96]` -> `[1,1]`) before trusting them.
+  **Verified the full pipeline twice, independently, before calling it
+  done -- not just written and assumed correct:** (1) built a Python
+  reference implementation of the exact streaming algorithm and ran it
+  against all three real model files with synthetic audio -- confirmed
+  it runs end-to-end with no shape errors and produces stable, sane
+  low-confidence scores (~0.0008) on random noise, i.e. correctly
+  rejecting non-wakeword audio rather than crashing or returning
+  garbage/NaN; (2) extracted the ACTUAL JavaScript pipeline code from
+  `farmer.html` (not a reimplementation -- the literal functions that
+  will run in the browser) and ran it in Node via `onnxruntime-node`
+  (same `ort.InferenceSession`/`ort.Tensor` API surface as
+  `onnxruntime-web`) against the same three real model files -- confirmed
+  identical behavior (same input/output tensor names discovered
+  correctly, 22 scores produced over ~37000 samples of continuous
+  processing with no shape errors, no NaN, scores in the same ~0.0007-
+  0.0009 range as the Python reference). This is the strongest
+  verification level used on this project's wakeword code to date --
+  the literal deployed JS was executed against the literal deployed
+  model files, not just reviewed or assumed correct by analogy to the
+  Python port.
+  `farmer.html`'s `scoreWakewordFrame()` placeholder was fully replaced
+  with the real pipeline: `runMelspectrogram()`, `runEmbedding()`,
+  `runClassifier()`, `processWakewordChunk()` (per-wakeword streaming
+  state: raw sample buffer, melspec buffer, feature/embedding buffer,
+  ported 1:1 from the Python reference's buffer-trim/windowing logic),
+  and `loadWakewordModels()` now loads the two shared models plus each
+  available classifier. `farmer_server.py`'s `/capabilities` endpoint's
+  `wakeword_models` field was tightened to require ALL THREE files
+  (shared melspec + shared embedding + that wakeword's own classifier)
+  before reporting a wakeword as available -- a classifier file alone
+  can't detect anything since its input is embeddings, not raw audio, so
+  reporting availability without the shared models would let the
+  frontend start a wakeword loop that could never actually fire.
+  **Still not tested with a real human voice or real browser mic/UI** --
+  this session's verification proves the model-inference chain is
+  numerically correct end-to-end against real files, but the full
+  loop (does saying "Hey Field" out loud actually push the score over
+  0.5, does the browser's mic-permission/ScriptProcessorNode capture
+  path feed it correctly, does the UI toggle/status text behave right)
+  is still unverified pending an actual microphone + browser test.
+  `melspectrogram.onnx`/`embedding_model.onnx` are gitignored same as
+  any other `.onnx` file (already covered by the existing `*.onnx` rule)
+  since they're large binary artifacts fetchable from a known official
+  URL, not something to commit.
+- **Real browser voice pipeline built for the farmer dashboard: wakeword +
+  streaming ASR + spoken replies (2026-09-19).** User pushed back hard on
+  the dashboard being typed-chat-only with a stub mic button: "the
+  dashboard should actually respond to the wakeword and other voice
+  commands. it is the farmer's interface and the main point in this
+  project is that" -- correctly identifying that voice was the whole
+  point and had regressed to an afterthought. Confirmed up front that the
+  local `main.py` wakeword pipeline (real microphone via `sounddevice`)
+  and the web dashboard are structurally separate systems that don't
+  share code -- a website can't reach a physical mic device the way a
+  local Python process does, so "make the dashboard respond to voice"
+  required a genuinely new browser-side implementation, not wiring
+  something that already existed.
+  **Scoping decisions, asked before building:** (1) wakeword detection
+  runs CLIENT-SIDE via `onnxruntime-web`, not server-side -- keeps
+  constant audio off the server (cheaper/more private, and Render's free
+  tier wouldn't handle an always-on server-side audio stream well
+  anyway), matches how a real wake-word device behaves. (2) scope also
+  includes spoken replies (TTS), not just wakeword+ASR. (3) TTS uses the
+  browser's built-in `speechSynthesis` (Web Speech API) rather than a
+  cloud TTS service -- zero cost, zero new API key, keeps the project's
+  standing free-tier-only constraint intact.
+  **Implementation:** `farmer_server.py` gained a `StaticFiles` mount at
+  `/wakeword-models` serving whatever `.onnx` files exist under
+  `agri_voice_agent/wakeword/models/` (the SAME directory `main.py`'s
+  local `WakewordRouter` already reads -- one set of model files works
+  for both the local and web paths, no duplication), and `/capabilities`
+  now reports `wakeword_models: {field: bool, plant: bool}` so the
+  frontend only offers wakeword listening for a model it can actually
+  fetch, same fail-gracefully pattern as `mic_available`/
+  `domains_available`. Fixed a parity gap while touching the WS
+  `/voice` handler: it was missing `switched`/`needs_location` in its
+  final result payload (only present on the ambiguous-farm early return),
+  so a voice-triggered redirect or location-fallback never surfaced to
+  the farmer the way the typed `/chat` path already does -- now sends
+  both, matching `ChatOut`'s shape exactly.
+  `farmer.html`: loads `onnxruntime-web` 1.19.2 from cdnjs. Refactored
+  `sendMessage()`'s reply-handling (switched notice, farm disambiguation
+  picker, needs_location nudge, farm_state render) out into a shared
+  `handleAgentReply(data, {spoken, retryText})` so both the typed `/chat`
+  path and the new voice `/voice` WebSocket path render replies
+  identically -- verified live via curl that `/chat` still works
+  unchanged after the extraction. New voice module (~250 lines): mic
+  capture via `ScriptProcessorNode` (deprecated but universally supported
+  including older mobile browsers, chosen over the modern
+  `AudioWorklet` replacement specifically to avoid its extra worklet-file
+  + stricter secure-context requirements for this scope) downsampled to
+  16kHz 16-bit PCM (`floatTo16kPcm()`, matching `asr.py`'s
+  `Encoding.pcm_s16le` exactly, same format main.py's local `sounddevice`
+  capture already produces); `streamPcmToVoiceSocket()` shared by both
+  push-to-talk (mic-btn, always available once `mic_available`) and
+  wakeword-triggered listening (wake-toggle, additionally needs a real
+  `.onnx` model present) since both just need to get PCM frames into
+  `WS /voice` and render whatever comes back.
+  **Wakeword model contract -- explicitly flagged as unverified, not
+  guessed-and-shipped-silently.** Researched openWakeWord's actual
+  architecture before assuming a shape (WebSearch + a WebFetch of a real
+  "openWakeWord in the browser" writeup, deepcorelabs.com) and confirmed
+  it is NOT a single end-to-end `.onnx` file -- it's a 3-stage pipeline
+  (a shared `melspectrogram.onnx` + a shared `embedding_model.onnx` +
+  your own classifier model, each a separate file with its own tensor
+  shapes, 1280-sample/80ms audio chunks, a 76-frame melspec buffer, a
+  16-embedding sliding window). Asked the user directly whether to build
+  that full 3-stage chain now or keep a simpler placeholder -- **user
+  chose to keep the placeholder** since no trained model exists yet to
+  build/verify the real chain against. `scoreWakewordFrame()` is
+  explicitly commented as an UNVERIFIED single-model placeholder
+  (`[1,N]` float32 in, first output as confidence) that will need a real
+  rewrite (not a tensor-shape tweak) if the eventual model turns out to
+  be openWakeWord-style. **This is the load-bearing open question for
+  next session if wakeword testing doesn't work:** check what the actual
+  trained model's input/output contract is before assuming
+  `scoreWakewordFrame()` is wrong in some smaller way.
+  **Not yet tested with a real microphone or real model** -- no `.onnx`
+  files exist yet (same standing blocker as before), and this session's
+  verification was structural only: confirmed the `/wakeword-models`
+  static mount serves a file correctly (tested with a fake placeholder
+  file, then removed it), confirmed `/capabilities`' new
+  `wakeword_models` field correctly flips true/false based on file
+  presence, confirmed the page loads with the onnxruntime-web script tag
+  and all new DOM elements present, confirmed JS brace/paren balance,
+  confirmed `/chat` still returns correct results after the
+  `handleAgentReply` extraction. The actual mic-permission flow,
+  wakeword-to-ASR handoff, and TTS playback are all UNTESTED against a
+  real browser + microphone + trained model -- flag this honestly if
+  asked "does the voice pipeline work" before a real end-to-end test has
+  happened.
+- **Mobile-first farmer dashboard redesign + deployment prep, git repo
+  initialized (2026-09-17).** User pointed out field workers will use
+  mobile, not laptop, and asked how to publish this for the hackathon
+  submission rather than leaving it localhost-only.
+  **Mobile layout fix (real bug found on review, not just a polish
+  request):** the sidebar (brand header, 3 assistant status rows, farms
+  list, add-farm form, footer) was stacking ABOVE the chat panel on mobile
+  widths (<900px) via a plain grid-to-1-column breakpoint -- so a farmer
+  opening the dashboard on a phone had to scroll past the entire sidebar
+  before reaching the actual chat input. Rebuilt as an off-canvas drawer:
+  a sticky mobile top bar (brand + "Farms" toggle button) replaces the
+  sidebar below 900px, chat is immediately visible, and the sidebar
+  becomes a slide-in drawer (`transform: translateX`, backdrop overlay)
+  opened via the top bar button or closed by tapping the backdrop /
+  selecting a farm. Also fixed an iOS Safari-specific bug: every text
+  input on the page was under 16px font-size, which triggers Safari's
+  auto-zoom-on-focus (a genuine mobile annoyance, not cosmetic) -- forced
+  16px on all inputs specifically under the 900px breakpoint. Technical
+  dashboard (`index.html`) reviewed too but left alone -- already has a
+  reasonably professional dark "field-notebook" look and degrades cleanly
+  to one column on mobile; it's the judge/demo debug view, not the
+  farmer's actual tool, so lower priority per the user's own framing.
+  **Hosting: Vercel vs Render, explicitly discussed before building
+  anything.** User has a Vercel account and asked whether to use it.
+  Explained why Vercel is a poor fit for THIS app specifically (not
+  Vercel in general): its serverless functions have no persistent
+  filesystem, so `FarmState.load/save`'s `farm_state.json` writes would
+  vanish between invocations and farm data would never actually persist;
+  WebSocket support (the `/voice` endpoint) is unreliable/unsupported on
+  standard Vercel functions; cold starts would be worse than Render's
+  already-annoying free-tier sleep. Render runs the FastAPI app as an
+  actual persistent process, which is what `farmer_server.py` is already
+  built to be -- no adaptation needed. **User chose Render.**
+  Deployment prep: `farmer_server.py`'s `main()` now reads `$PORT`/binds
+  to `0.0.0.0` when set (required by Render), still defaults to
+  `127.0.0.1:8001` for local dev when `$PORT` is absent -- confirmed
+  `python -m agri_voice_agent.farmer_server` with no flags is unchanged
+  locally. Added `requirements-deploy.txt` -- a slim dependency list
+  EXCLUDING `onnxruntime`/`sounddevice` (mic/wakeword-only, verified via
+  an AST import-walk of `farmer_server.py`'s actual module graph that
+  neither package is ever imported by the web dashboard's code path;
+  `sounddevice` specifically can fail to build on a headless container
+  without system PortAudio libs, so leaving it out avoids a deploy-time
+  build failure for a dependency this service never uses). Added
+  `Procfile` (`web: python -m agri_voice_agent.farmer_server`) and
+  `render.yaml` (free plan, build/start commands, three API keys declared
+  as `sync: false` env vars so Render prompts for them in its dashboard
+  rather than expecting them committed to the repo).
+  **Git repo initialized** (project had none before this session -- no
+  prior VCS history to lose). Checked `.gitignore` already excluded `.env`
+  before running `git add -A`; added `agri_voice_agent/farm_state.json`
+  to `.gitignore` too (live state, not a secret, but shouldn't be a
+  tracked/changing file). Verified via `git diff --cached --name-only`
+  that neither `.env` nor `farm_state.json` were staged before
+  committing -- 39 files, initial commit made locally.
+  **Explicitly NOT pushed to GitHub or deployed yet** -- user said "don't
+  push anything yet, just give the steps" after I found two GitHub
+  accounts logged into `gh` (Hypeinsight, currently active; Dhanaa98) and
+  asked which should own the repo. Gave the manual steps instead (gh repo
+  create / push, then connect on render.com, add the 3 API keys as env
+  vars) for the user to run themselves when ready. **Next session: if
+  asked to deploy, confirm which GitHub account first (don't assume the
+  currently-active `gh` one) and confirm public/private before creating
+  anything remote -- both were explicitly decided this session (Hypeinsight
+  question was left unresolved/deferred; public was confirmed) but neither
+  should be treated as still-decided if considerable time has passed or
+  the user's GitHub setup may have changed.**
 - **Wakewords collapsed from three to two: "Hey Field" (Weather+Crop) + "Hey
   Plant" (2026-09-17).** Continuing the earlier "should we merge wakewords"
   discussion (see the wakeword-phrase-review entry below, where the user
@@ -1017,16 +1433,63 @@ Running log of build progress for this project at
       abiotic-hint phrase correctly appended the caveat to the final diagnosis.
       Existing manual test and cross-domain integration test both re-run clean
       after these changes (exit 0, no behavior change to the un-hinted path).
-- [ ] Wakeword `.onnx` models — still not provided; router handles this
-      gracefully but no `.onnx` files exist yet at
+- [ ] Wakeword `.onnx` models — still not provided; now needs `field.onnx` +
+      `plant.onnx` (down from three separate files) at
       `agri_voice_agent/wakeword/models/`. This is the only remaining
       blocker that depends on the user (they said they'd train/provide these
       themselves) rather than something buildable independently.
-- [ ] Live end-to-end test with real API keys + physical microphone — still
-      nothing has been run against live AssemblyAI/Gemini/OpenWeatherMap
-      services; no `.env` file exists yet in the project (confirmed absent as
-      of this log entry). Everything to date is import/construction-verified
-      or run with synthetic data only.
+- [x] Live API keys — `.env` now has `GEMINI_API_KEY` and
+      `OPENWEATHER_API_KEY` set and confirmed working against live services
+      (see the 2026-09-16 live-testing entries above). `ASSEMBLYAI_API_KEY`
+      still not set, so the mic/ASR voice pipeline itself remains untested
+      end-to-end -- everything ASR-dependent is still import/construction-
+      verified or run via `--domain` bypass only.
+- [x] Git repo + deployment prep (2026-09-17) — see this log's entry above.
+      Repo initialized and committed locally; `farmer_server.py` reads
+      `$PORT`/binds `0.0.0.0` for cloud hosting; `requirements-deploy.txt`,
+      `Procfile`, `render.yaml` in place for Render's free tier. **Not yet
+      pushed to GitHub or actually deployed** — user asked for the steps
+      only, to run themselves when ready. See `docs/artifacts.md` note: no
+      live public URL exists yet, so "how do I access this" still means
+      localhost until that push+deploy actually happens.
+- [ ] **Future enhancement, not yet started: farmer-selectable/custom
+      wakewords.** Idea raised 2026-09-21 while discussing team-naming
+      wordplay around "Hey Field"/"Hey Plant" -- user clarified the real
+      ask isn't renaming the actual product wakewords, it's a genuine
+      feature: let a farmer choose/train whichever wakeword phrase they
+      personally prefer, rather than being locked into "Hey Field"/"Hey
+      Plant" specifically. Explicitly flagged as "if we have time, later
+      in the project" -- not current scope, just recorded so it isn't
+      lost.
+      What this would actually take, given the now-verified 3-stage
+      openWakeWord pipeline (see the 2026-09-21 entry above): the shared
+      `melspectrogram.onnx`/`embedding_model.onnx` stages never change
+      regardless of phrase -- only the final classifier .onnx is
+      phrase-specific. So "multiple wakewords ready" means maintaining a
+      small LIBRARY of pre-trained classifier models (e.g. the same way
+      `hey_jarvis.onnx`/`alexa_v0.1.onnx` were pulled from openWakeWord's
+      own published releases during this session's debugging) that a
+      farmer could pick from in the dashboard UI, swapping which
+      `.onnx` file `wakeword-models/field.onnx` (or a new named slot)
+      points to -- no pipeline code changes needed, since
+      `runClassifier()` already reads input/output tensor names
+      dynamically per-model rather than hardcoding them (confirmed
+      necessary this session: `field.onnx` and `hey_jarvis.onnx` have
+      DIFFERENT tensor names -- `onnx::Flatten_0`/`39` vs `x.1`/`53` --
+      and the dynamic lookup already handles that correctly).
+      A farmer TRAINING their own brand-new custom phrase (as opposed to
+      picking from a pre-made library) is a much bigger lift -- would need
+      either integrating openWakeWord's own training pipeline (needs
+      example recordings of the phrase, a training run, likely too slow/
+      heavy to run client-side) or a hosted training service; out of scope
+      for "later in the project" unless explicitly asked for specifically.
+      **Where this would need to change:** `farmer_server.py`'s
+      `/capabilities` (`wakeword_models` field would need to report a
+      list of available named options, not just field/plant booleans),
+      a new endpoint to switch which classifier is active, and
+      `farmer.html`'s wake-toggle UI would need a picker instead of a
+      single fixed phrase. `wakeword/router.py` (the local main.py
+      pipeline) would need the equivalent for voice-only usage.
 - [ ] Demo polish/rehearsal.
 
 ## Why this matters

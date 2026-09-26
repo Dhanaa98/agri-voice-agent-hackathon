@@ -16,6 +16,11 @@ def run_conversation(agent: PlantAgent, state: FarmProfile, session_id: str, tur
         print(f"  farmer: {turn}")
         response = agent.handle(state, turn, crop="tomato", session_id=session_id)
         print(f"  agent:  {response}")
+    # The doctor may want more questions than the scripted turns cover.
+    while not agent.is_done(session_id):
+        print("  farmer: I'm not sure")
+        response = agent.handle(state, "I'm not sure", crop="tomato", session_id=session_id)
+        print(f"  agent:  {response}")
     print()
 
 

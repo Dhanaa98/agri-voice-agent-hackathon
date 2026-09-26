@@ -8,5 +8,8 @@ venv/
 agri_voice_agent/farm_state.json
 agri_voice_agent/real_negative_raw/
 agri_voice_agent/real_positive_raw/
+agri_voice_agent/synthetic_positive_raw/
+agri_voice_agent/synthetic_negative_raw/
 server_stdout.log
 server_stderr.log
+agri_voice_agent/hey green/

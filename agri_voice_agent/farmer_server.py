@@ -11,10 +11,10 @@ practice a farmer chatting naturally forgets to re-click when their topic
 shifts mid-conversation -- "do you think we have rain next week" while the
 Plant button was still active would silently go to the wrong agent. So the
 farmer-facing side is now a SINGLE chat: every message runs through
-intent.py's keyword detection to pick the right agent automatically (see
-route_message() below), with the previously-active domain kept as the
-fallback when a message's wording doesn't clearly point anywhere (e.g. "ok
-thanks" or a Plant follow-up answer) rather than guessing wrong.
+intent.py's keyword detection (then an LLM classifier with recent turns as
+context) to pick the right agent automatically (see route_message() below).
+A message neither can place gets "Sorry, I didn't catch that" rather than a
+guessed answer; a Plant follow-up answer always stays with Plant.
 
 Two ways a farmer's utterance reaches a domain agent:
   1. POST /chat -- typed text, works everywhere, no API key beyond the
@@ -51,6 +51,7 @@ See resolve_active_farm() below for the actual decision logic.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import requests
@@ -65,7 +66,8 @@ from .domains.crop import CropAgent
 from .domains.plant import PlantAgent
 from .domains.weather import WeatherAgent
 from .farm_state import FarmProfile, FarmState
-from .intent import detect_domain
+from .domains.weather import extract_location
+from .intent import classify_with_llm, detect_domain
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 WAKEWORD_MODELS_DIR = config.WAKEWORD_MODELS_DIR
@@ -120,23 +122,21 @@ def _domain_conversation_done(domain: str) -> bool:
     return True
 
 
-def route_message(text: str) -> tuple[str, bool, bool]:
+def route_message(text: str, recent_turns: str = "") -> tuple[str | None, bool, bool]:
     """Pick which domain this message belongs to. Returns (domain,
-    is_fresh_exchange, switched).
+    is_fresh_exchange, switched); domain is None when the message is
+    unclear and the farmer should be asked to repeat it.
 
     `is_fresh_exchange` is False only when continuing the currently-active
     multi-turn Plant conversation -- the farmer's answer to a follow-up
     question (e.g. "the whole plant, not just one branch") must never be
-    re-routed, since it's a response to a pending question, not a new
-    topic, even if its wording happens to overlap another domain's
-    keywords. Otherwise, intent.py's keyword match decides; a message with
-    no clear match (e.g. "ok thanks", "what about next week") stays on
-    whatever domain was already active rather than guessing, since that's
-    usually still a continuation of the same topic in natural chat.
+    re-routed. Otherwise keywords decide, then the LLM classifier with the
+    recent turns as context. There is deliberately no fallback to the
+    previously active domain: that used to answer garbled or echoed
+    transcripts ("How can I help you today.") with a weather report.
 
-    `switched` is True only when this message's own wording caused a
-    change from the previously-active domain -- used to show a "switched
-    to X" note in the UI without one firing on every single message.
+    `switched` is True only when this message moved the chat to a
+    different domain -- used for a small "switched to X" note in the UI.
     """
     global _current_domain
 
@@ -144,11 +144,12 @@ def route_message(text: str) -> tuple[str, bool, bool]:
     if mid_plant_conversation:
         return "plant", False, False
 
+    detected = detect_domain(text) or classify_with_llm(text, recent_turns)
+    if detected is None:
+        return None, True, False
     previous = _current_domain
-    detected = detect_domain(text)
-    if detected is not None:
-        _current_domain = detected
-    return _current_domain, True, _current_domain != previous
+    _current_domain = detected
+    return detected, True, detected != previous
 
 
 def _find_farm_by_name(name: str) -> int | None:
@@ -439,73 +440,105 @@ async def resolve_location(body: ResolveLocationIn, request: Request) -> Resolve
     return ResolveLocationOut(location=None, source="unavailable")
 
 
-@app.post("/chat", response_model=ChatOut)
-async def chat(body: ChatIn) -> ChatOut:
-    """Single-chat typed-text path -- see module docstring. route_message()
-    decides which domain handles this message; the frontend never tells us
-    which agent to use."""
-    domain, is_fresh_exchange, switched = route_message(body.text)
+CLARIFY_TEXT = "Sorry, I didn't catch that. Could you say it again?"
+ASK_LOCATION_TEXT = "Sure. Which town or area is your farm in?"
+LOCATION_NOT_FOUND_TEXT = "Sorry, I couldn't find that place. Which town or city is your farm near?"
+
+# The weather question we're holding while waiting for the farmer to tell
+# us where their farm is -- answered as soon as they reply with a place.
+_pending_weather_question: str | None = None
+
+_LOCATION_REPLY_PREFIX = re.compile(
+    r"^(?:(?:it'?s|it is|my farm is|the farm is|we'?re|we are|i'?m|i am)\s+)?(?:(?:in|at|near|around)\s+)?",
+    re.IGNORECASE,
+)
+
+
+def _location_from_reply(text: str) -> str:
+    """"It's in Kandy." -> "Kandy"."""
+    return _LOCATION_REPLY_PREFIX.sub("", text.strip()).strip(" .!?,")
+
+
+def _recent_turns(farm: FarmProfile, n: int = 4) -> str:
+    return "\n".join(f"{t.role}: {t.text}" for t in farm.chat_history[-n:])
+
+
+def _reply(domain: str, response: str, farm: FarmProfile | None, text: str, **extra) -> dict:
+    if farm is not None:
+        farm.add_chat_turn(domain=domain, role="farmer", text=text)
+        farm.add_chat_turn(domain=domain, role="agent", text=response)
+        _farm_state.save(config.FARM_STATE_PATH)
+    done = _domain_conversation_done(domain) if domain in MULTI_TURN_DOMAINS else True
+    return {"domain": domain, "response": response, "done": done, "farm_state": _farm_state.to_dict(), **extra}
+
+
+def _answer(text: str, location: str | None = None, farm_name: str | None = None, crop: str | None = None) -> dict:
+    """Shared by typed /chat and the /voice WebSocket, so both behave the
+    same: clarify instead of guessing, ask for a location before answering
+    weather when none is known, and hand every agent the actual question."""
+    global _pending_weather_question
+
+    text = (text or "").strip()
+    if not text:
+        return _reply("general", CLARIFY_TEXT, None, text)
+
+    # The farmer is answering our "which town is your farm in?" question --
+    # unless they've clearly moved on to a crop or plant question instead.
+    if _pending_weather_question is not None and detect_domain(text) not in ("crop", "plant"):
+        pending = _pending_weather_question
+        place = location or _location_from_reply(text)
+        farm, _, _ = resolve_active_farm(farm_name, place)
+        try:
+            response = _agents["weather"].handle(farm, location=place, question=pending)
+        except ValueError:
+            return _reply("weather", LOCATION_NOT_FOUND_TEXT, farm, text)
+        except Exception as exc:  # noqa: BLE001
+            response = f"Something went wrong checking the weather: {exc}"
+        _pending_weather_question = None
+        return _reply("weather", response, farm, text)
+    _pending_weather_question = None
+
+    context_farm = _farm_state.active_farm or _scratch_farm
+    domain, is_fresh_exchange, switched = route_message(text, _recent_turns(context_farm))
+    if domain is None:
+        return _reply("general", CLARIFY_TEXT, context_farm, text)
 
     agent = _agents.get(domain)
     if agent is None:
-        return ChatOut(
-            domain=domain,
-            response=f"The {domain} agent isn't available right now (missing an API key).",
-            done=True,
-            farm_state=_farm_state.to_dict(),
-        )
+        return _reply(domain, f"The {domain} assistant isn't available right now.", None, text)
 
     if is_fresh_exchange:
-        farm, _, ambiguous = resolve_active_farm(body.farm_name, body.location)
+        farm, _, ambiguous = resolve_active_farm(farm_name, location)
         if ambiguous is not None:
-            return ChatOut(
-                domain=domain,
-                response="You have more than one farm -- which one is this about: " + ", ".join(ambiguous) + "?",
-                done=True,
-                farm_state=_farm_state.to_dict(),
-                ambiguous_farms=ambiguous,
-            )
+            response = "You have more than one farm -- which one is this about: " + ", ".join(ambiguous) + "?"
+            return _reply(domain, response, None, text, ambiguous_farms=ambiguous)
     else:
-        # Mid multi-turn conversation (Plant): keep using whichever farm
-        # the session already started against, never re-resolve.
+        # Mid multi-turn Plant diagnosis: keep the farm it started on.
         farm, _, _ = resolve_active_farm(None, None)
 
-    needs_location = False
+    if domain == "weather" and not location and not farm.location_confirmed and not extract_location(text):
+        _pending_weather_question = text
+        return _reply(domain, ASK_LOCATION_TEXT, farm, text, switched=switched)
 
     try:
         if domain in MULTI_TURN_DOMAINS:
-            response = agent.handle(farm, body.text, crop=body.crop)
+            response = agent.handle(farm, text, crop=crop)
         elif domain == "weather":
-            # location=None here still resolves via WeatherAgent.handle()'s
-            # own fallback chain (explicit -> farm.location ->
-            # config.DEFAULT_LOCATION). needs_location is driven by
-            # farm.location_confirmed, which WeatherAgent.handle() only
-            # sets True when a real explicit location was given -- falling
-            # all the way back to config.DEFAULT_LOCATION does NOT count as
-            # confirmed, so the prompt keeps showing on every query until
-            # the farmer actually supplies a location, not just the first.
-            response = agent.handle(farm, location=body.location, question=body.text)
-            needs_location = not farm.location_confirmed
-        elif domain == "crop":
-            response = agent.handle(farm, crop_name=body.crop)
+            response = agent.handle(farm, location=location, question=text)
         else:
-            response = agent.handle(farm)
+            response = agent.handle(farm, crop_name=crop, question=text)
     except Exception as exc:  # noqa: BLE001 -- surface the failure to the farmer, don't crash the server
         response = f"Something went wrong handling that: {exc}"
 
-    farm.add_chat_turn(domain=domain, role="farmer", text=body.text)
-    farm.add_chat_turn(domain=domain, role="agent", text=response)
-    _farm_state.save(config.FARM_STATE_PATH)
-    done = _domain_conversation_done(domain) if domain in MULTI_TURN_DOMAINS else True
+    return _reply(domain, response, farm, text, switched=switched)
 
-    return ChatOut(
-        domain=domain,
-        response=response,
-        done=done,
-        farm_state=_farm_state.to_dict(),
-        switched=switched,
-        needs_location=needs_location,
-    )
+
+@app.post("/chat", response_model=ChatOut)
+async def chat(body: ChatIn) -> ChatOut:
+    """Typed-text path -- see _answer(). Runs in a worker thread because
+    the agents make blocking HTTP/LLM calls."""
+    result = await asyncio.to_thread(_answer, body.text, body.location, body.farm_name, body.crop)
+    return ChatOut(**result)
 
 
 @app.websocket("/voice")
@@ -559,68 +592,8 @@ async def voice_session(websocket: WebSocket) -> None:
 
 
 async def _handle_voice_transcript(websocket: WebSocket, transcript: str) -> None:
-    domain, is_fresh_exchange, switched = route_message(transcript)
-
-    agent = _agents.get(domain)
-    if agent is None:
-        await websocket.send_json({"type": "error", "message": f"The {domain} agent isn't available right now."})
-        return
-
-    if is_fresh_exchange:
-        # Voice input has no separate "location"/"farm_name" fields the way
-        # typed input does -- farm disambiguation for speech relies on the
-        # same already-active farm (or the single-farm/zero-farm defaults);
-        # a multi-farm farmer switching farms by voice says so in their
-        # transcript, which is future work once a real ASR key is in use.
-        farm, _, ambiguous = resolve_active_farm(None, None)
-        if ambiguous is not None:
-            await websocket.send_json(
-                {
-                    "type": "result",
-                    "domain": domain,
-                    "transcript": transcript,
-                    "response": "You have more than one farm -- which one is this about: "
-                    + ", ".join(ambiguous)
-                    + "?",
-                    "done": True,
-                    "farm_state": _farm_state.to_dict(),
-                    "ambiguous_farms": ambiguous,
-                }
-            )
-            return
-    else:
-        farm, _, _ = resolve_active_farm(None, None)
-
-    needs_location = False
-
-    try:
-        if domain in MULTI_TURN_DOMAINS:
-            response = agent.handle(farm, transcript)
-        elif domain == "weather":
-            response = agent.handle(farm, question=transcript)
-            needs_location = not farm.location_confirmed
-        else:
-            response = agent.handle(farm)
-    except Exception as exc:  # noqa: BLE001
-        response = f"Something went wrong handling that: {exc}"
-
-    farm.add_chat_turn(domain=domain, role="farmer", text=transcript)
-    farm.add_chat_turn(domain=domain, role="agent", text=response)
-    _farm_state.save(config.FARM_STATE_PATH)
-    done = _domain_conversation_done(domain) if domain in MULTI_TURN_DOMAINS else True
-
-    await websocket.send_json(
-        {
-            "type": "result",
-            "domain": domain,
-            "transcript": transcript,
-            "response": response,
-            "done": done,
-            "farm_state": _farm_state.to_dict(),
-            "switched": switched,
-            "needs_location": needs_location,
-        }
-    )
+    result = await asyncio.to_thread(_answer, transcript)
+    await websocket.send_json({"type": "result", "transcript": transcript, **result})
 
 
 def main() -> None:

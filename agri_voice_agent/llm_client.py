@@ -7,6 +7,8 @@ brief.
 
 from __future__ import annotations
 
+import time
+
 from google import genai
 from google.genai import errors, types
 
@@ -68,11 +70,22 @@ def generate(
     client = _get_client()
     config_kwargs = {"system_instruction": system_instruction} if system_instruction else {}
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+        except errors.ServerError:
+            # One quick retry for Gemini's transient 503 "high demand /
+            # deadline expired" errors, seen mid-conversation in testing --
+            # usually gone a second later. Client errors (4xx) aren't retried.
+            time.sleep(1.5)
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
     except errors.APIError as exc:
         # Covers both server-side outages (e.g. a transient 503 "model
         # experiencing high demand") and client-side failures (bad model

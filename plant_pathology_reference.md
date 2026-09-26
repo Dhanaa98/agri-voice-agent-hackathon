@@ -40,6 +40,26 @@ runtime-facing subset).
 | 16 | National Horticulture Board (India), "Banana Diseases" (`ban002.pdf`), https://nhb.gov.in/pdf/fruits/banana/ban002.pdf, 4 pages | Regional (India) single-crop government horticulture fact sheet | **Web-sourced, not user-supplied -- see note below.** Expanded the near-empty Banana section: 4 new `plant_data.py` entries (Panama Wilt, Cigar End Tip Rot, Bacterial Wilt/Moko Disease, Banana Bract Mosaic Virus) plus 9 further diseases documented in this reference doc only (Sigatoka, Anthracnose, Crown Rot, Stem-end Rot, Pseudostem Heart Rot, Head Rot, Banana Bunchy Top Virus, Banana Streak Virus, Mosaic Virus) |
 | 17 | Ohio State University CFAES, "Fire Blight of Apples and Pears" fact sheet, https://cfaes.osu.edu/fact-sheet/fire-blight-apples-and-pears | Structured online single-disease extension fact sheet (Ohio, US) | **Web-sourced, not user-supplied -- see note below.** Expanded the Apple section's name-only fire blight mention into a full entry (pathogen, all symptom stages, conditions, resistant varieties, pruning, chemical/biological/cultural control); also fed a new `plant_data.py` entry for Apple |
 | 18 | California Department of Food and Agriculture (CDFA), Citrus Canker Pest Profile, https://www.cdfa.ca.gov/citrus/pests_diseases/ccd.html | Structured online single-disease regulatory pest profile (California, US) | **Web-sourced, not user-supplied -- see note below.** Expanded the Citrus section's name-only citrus canker mention into a full entry (pathogen, symptoms, spread, regulatory/quarantine status, historic Florida eradication cost figures); also fed a new `plant_data.py` entry for Citrus |
+| 19 | Sri Lanka Department of Agriculture (HORDI), "Tomato" crop page, https://doa.gov.lk/hordi-crop-tomato/ | National government crop page (Sri Lanka) | **Web-sourced, eighth pass.** Tomato Early blight, Late blight, Septoria leaf spot, Powdery mildew, Bacterial wilt, TYLCV with Sri Lanka fungicide doses (tagged `LK`); also documents damping-off, target spot, anthracnose, collar rot, bacterial canker, curly top, TSWV and CMV (reference only) |
+| 20 | Sri Lanka Department of Agriculture (HORDI), "Brinjal" crop page, https://doa.gov.lk/hordi-crop-brinjal/ | National government crop page (Sri Lanka) | **Web-sourced, eighth pass.** Brinjal Phomopsis blight, Bacterial wilt, Anthracnose (`LK` doses); damping-off, collar rot, Fusarium wilt, powdery mildew documented but not promoted |
+| 21 | Sri Lanka Department of Agriculture (HORDI), "Cassava" crop page, https://doa.gov.lk/hordi-crop-cassava/ | National government crop page (Sri Lanka) | **Web-sourced, eighth pass.** New Cassava section (mosaic virus, brown leaf spot, collar/root rot) and CropProfile climate figures (25-29C, 1000-1500 mm/yr, up to 1500 m) |
+| 22 | Sri Lanka Department of Agriculture (FRDI), "Pineapple" crop page, https://doa.gov.lk/fruit-crops-pineapple-e/ | National government crop page (Sri Lanka) | **Web-sourced, eighth pass.** New Pineapple section (Phytophthora crown/root rot, fruit rot, pineapple wilt) and CropProfile climate figures (24-32C, 1500-3000 mm/yr, pH 5-6) |
+| 23 | UC Statewide IPM Program, Tomato Pest Management Guidelines: [Late blight](https://ipm.ucanr.edu/agriculture/tomato/late-blight/), [Early blight](https://ipm.ucanr.edu/agriculture/tomato/early-blight/) | State extension guidelines (California, US) | **Web-sourced, eighth pass.** US-tagged control for tomato late/early blight; late blight weather trigger (humidity >90%, 60-78F) |
+| 24 | UC IPM, Potato: [Early blight](https://ipm.ucanr.edu/agriculture/potato/early-blight/) | State extension guidelines (California, US) | **Web-sourced, eighth pass.** New potato Early blight entry |
+| 25 | AHDB Potatoes, [Late blight disease and its management in potatoes](https://potatoes.ahdb.org.uk/knowledge-library/late-blight-disease-and-its-management-in-potatoes) | National levy-board guidance (UK) | **Web-sourced, eighth pass.** New potato Late blight entry with `GB`-tagged advice and the Hutton Criteria weather trigger |
+| 26 | UC IPM, Avocado: [Phytophthora root rot](https://ipm.ucanr.edu/agriculture/avocado/phytophthora-root-rot/), [Anthracnose](https://ipm.ucanr.edu/agriculture/avocado/anthracnose/) | State extension guidelines (California, US) | **Web-sourced, eighth pass.** New Avocado section |
+| 27 | UC IPM, Olive: [Peacock spot](https://ipm.ucanr.edu/agriculture/olive/peacock-spot/), [Olive knot](https://ipm.ucanr.edu/agriculture/olive/olive-knot/) | State extension guidelines (California, US) | **Web-sourced, eighth pass.** New Olive section |
+| 28 | UC IPM, Apple: [Apple scab](https://ipm.ucanr.edu/agriculture/apple/apple-scab/) | State extension guidelines (California, US) | **Web-sourced, eighth pass.** Apple scab US-tagged control (green-tip start, Mills leaf-wetness figures, actives) |
+| 29 | Royal Horticultural Society, [Apple and pear scab](https://www.rhs.org.uk/disease/apple-and-pear-scab) | National horticultural society guidance (UK) | **Web-sourced, eighth pass.** Apple scab symptoms and `GB`-tagged resistant cultivars |
+| 30 | Canola Council of Canada, Canola Encyclopedia: [Blackleg](https://www.canolacouncil.org/canola-encyclopedia/diseases/blackleg/), [Clubroot](https://www.canolacouncil.org/canola-encyclopedia/diseases/clubroot/), [Sclerotinia stem rot](https://www.canolacouncil.org/canola-encyclopedia/diseases/sclerotinia-stem-rot/) | National industry agronomy reference (Canada) | **Web-sourced, eighth pass.** New Canola section with `CA`-tagged advice and the blackleg weather trigger (rain >2 mm, 13-18C, RH >80%); canola temperature band (optimum 18-25C, heat stress from ~29.5-30C at flowering) from the Council's Environmental Effects and heat-stress pages as summarised in search results |
+| 31 | CropLife Australia, [Canola -- Blackleg and Sclerotinia resistance management](https://www.croplife.org.au/resources/programs/resistance-management/canola-blackleg/) | National industry resistance-management rules (Australia) | **Web-sourced, eighth pass.** `AU`-tagged canola blackleg and sclerotinia advice (500 m from last season's stubble, fungicide group limits, flowering spray timing). Used because GRDC's own blackleg guide returned HTTP 403 to automated fetches |
+| 32 | NC State Extension, [Mummy Berry Disease of Blueberry](https://content.ces.ncsu.edu/mummy-berry-disease-of-blueberry) | State extension fact sheet (North Carolina, US) | **Web-sourced, eighth pass.** New Blueberry section (mummy berry, `US`-tagged resistant cultivars). No blueberry CropProfile: the sources give chill-hour needs, not a growing temperature band |
+| 33 | NDSU Extension, [Cercospora Leaf Spot in Sugarbeet](https://www.ndsu.edu/agriculture/ag-hub/ag-topics/crop-production/crops/sugarbeets/cercospora-leaf-spot-sugarbeet) | State extension guidance (North Dakota/Minnesota, US) | **Web-sourced, eighth pass.** New Sugar beet section (Cercospora leaf spot, `US`-tagged spray guidance) |
+| 34 | Teagasc, [Judicious use of chemistries now critical to control late blight](https://www.teagasc.ie/news--events/news/2024/chem-blight-control.php) (2024) | National agriculture and food development authority (Ireland) | **Web-sourced, ninth pass.** `IE`-tagged potato late blight advice: tank-mix and alternate modes of action; EU_43_A1 strain (Ireland 2023) resists CAA and OSBPI groups |
+| 35 | Embrapa Soja, [Ferrugem-asiática da soja: manejo e prevenção](https://www.embrapa.br/web/soja/ferrugem/inicial) (Portuguese, translated) | National agricultural research corporation (Brazil) | **Web-sourced, ninth pass.** `BR`-tagged soybean rust advice: vazio sanitário (soybean-free period), early-cycle cultivars sown early, fungicide mixtures with different modes of action |
+| 36 | Business Queensland, [Managing Panama disease tropical race 4](https://www.business.qld.gov.au/industries/farms-fishing-forestry/agriculture/crops/fruit-veg/bananas/panama-disease-tr4/manage) plus the Queensland TR4 overview search summary | State government biosecurity guidance (Queensland, Australia) | **Web-sourced, ninth pass.** `AU`-tagged banana Panama disease TR4 on-farm biosecurity (zoning, clean access, vehicle disinfection, footbaths, soil/water/plant movement) |
+| 37 | EFSA, [Xylella fastidiosa topic page](https://www.efsa.europa.eu/en/topics/topic/xylella-fastidiosa) | EU food safety agency scientific topic page (European Union) | **Web-sourced, ninth pass.** New olive entry Olive quick decline (Xylella fastidiosa): EU status (IT, FR, ES, PT), meadow spittlebug vector, quarantine measures, tolerant varieties Leccino and FS-17 |
+| 38 | Prasanna B.M. et al., "Maize Lethal Necrosis (MLN) and its Management", in *Detection and Field Management of Plant Viruses and their Vectors* (2025), CIMMYT, https://mln.cimmyt.org/ (PDF, 22 pages, extracted with `pypdf`) | International research centre book chapter (eastern Africa) | **Web-sourced, ninth pass.** New maize entry Maize lethal necrosis with general practice and eastern-Africa-tagged (`KE`, `UG`, `TZ`, `ET`, `RW`) advice |
 
 Where a source cites supporting literature (author/year), those citations are
 generally omitted here for brevity; consult the source's own reference list
@@ -87,6 +107,44 @@ blight and citrus canker were likewise added as new `NamedDisease` entries
 to the existing apple/citrus lists (comprehensive-promotion crops, per the
 sixth-pass -- now seventh in numbering -- convention described in
 `plant_data.py`'s module docstring).
+
+**Note on sources 19-33 (web-sourced, eighth extraction pass, 2026-09-26):**
+aimed at international coverage -- the hackathon judges are from the US,
+UK, Australia, Canada and Europe -- and at filling the knowledge base's
+biggest real-world gaps: tomato had none of its most common diseases (early
+blight, late blight, Septoria, bacterial wilt, TYLCV) and potato had no late
+blight. Each disease's control advice is split into general practice
+(shown to every farmer) and region-tagged specifics (`LK`, `US`, `GB`, `CA`,
+`AU`), so the same disease gives a Sri Lankan, Californian, British,
+Canadian or Australian farmer advice that is valid where they farm. All
+pages were read in full via direct fetch except where noted in the table
+(GRDC and the UMass/UMN fact sheets refused automated fetches, so
+alternative sources were used). Weather triggers were set only where the
+source gave figures (tomato late blight, potato late blight via the UK
+Hutton Criteria, canola blackleg); everything else keeps its conditions in
+prose rather than an invented threshold. Temperature bands for the new
+avocado, olive and sugar beet `CropProfile`s came from extension/industry
+summaries in web search results (UF IFAS for avocado, olive industry
+guides, Purdue NewCROP and published leaf-growth research for sugar beet)
+rather than a full-page read, and should be re-verified before being
+relied on commercially. Full disease text lives in `plant_data.py` itself
+(the "Eighth extraction pass" block), not duplicated into crop sections
+below.
+
+**Note on sources 34-38 (web-sourced, ninth extraction pass, 2026-09-26):**
+widened country coverage beyond the eighth pass's five regions, adding each
+region's signature disease from its own authority: Ireland (potato late
+blight, Teagasc), Brazil (soybean rust, Embrapa), Australia (banana Panama
+TR4, Queensland Government), the EU (olive quick decline / Xylella, EFSA)
+and eastern Africa (maize lethal necrosis, CIMMYT). Region-tagged advice now
+covers 17 countries. The same pass added a general (untagged) control entry
+to 42 diseases that previously had only country-tagged advice (mostly
+TNAU/India and GRDC/Australia), distilled from that same source text so
+farmers anywhere get usable advice (see `_GENERAL_PRACTICE` in
+`plant_data.py`). Attempted but not used because they refused automated
+fetches (HTTP 403 or connection refused): Kiwifruit Vine Health (NZ), NSW
+DPI and Agriculture Victoria (kiwifruit Psa), IRRI Rice Knowledge Bank,
+GRDC. Kiwifruit was therefore not added.
 
 ## Index
 

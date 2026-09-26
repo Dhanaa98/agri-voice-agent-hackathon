@@ -20,10 +20,12 @@ conversation shape -- multi-turn diagnosis needs a symptom description,
 not a one-shot question -- so it was kept apart rather than folded in
 too).
 
-Deterministic keyword matching, same philosophy as plant.py's
-match_symptom_category() -- never an LLM call, since routing to the wrong
-domain from a hallucinated guess would be worse than not redirecting at
-all. Only ever suggests a redirect; the caller decides whether to act on
+Keyword matching is the first and fast path. Only when no keyword matches
+does classify_with_llm() ask the model for a single constrained label
+(weather / crop / plant / unclear), given the last few turns so follow-ups
+like "and tomorrow?" still land correctly. "unclear" -- or no model
+available -- means the caller asks the farmer to repeat instead of guessing
+a domain. Only ever suggests a redirect; the caller decides whether to act on
 it, and it must never fire mid-conversation (see farmer_server.py's
 guard against running this on a Plant follow-up answer, where a farmer's
 short reply like "the whole plant" carries none of these keywords anyway
@@ -32,20 +34,19 @@ but could coincidentally overlap one in principle).
 
 from __future__ import annotations
 
-# Longer/more specific phrases are checked before shorter ones they
-# contain, mirroring plant.py's _SYMPTOM_KEYWORDS ordering discipline.
+import re
+
+from . import llm_client
+
+_CLASSIFIER_SYSTEM = "You are a strict text classifier. Reply with exactly one lowercase word and nothing else."
+
+# Checked in dict order, first match wins -- most specific domain first.
+# Symptom words are unambiguous, and crop questions routinely mention
+# weather context ("which crop suits this hot weather") while weather
+# questions rarely mention crops, so plant > crop > weather. Weather used
+# to be checked first, which sent every crop question that mentioned rain
+# or heat to Weather.
 _DOMAIN_KEYWORDS: dict[str, list[str]] = {
-    "weather": [
-        "weather", "forecast", "rain", "raining", "rainfall", "temperature",
-        "humid", "humidity", "hot", "cold", "sunny", "sunshine", "storm",
-        "wind", "windy", "climate", "degrees",
-    ],
-    "crop": [
-        "what should i plant", "what should i grow", "what to plant",
-        "what to grow", "suitable to plant", "good to plant", "good crop",
-        "which crop", "what crop", "plant now", "grow now", "planting season",
-        "suitable crop", "recommend a crop", "should i grow",
-    ],
     "plant": [
         "wilting", "wilt", "wither", "withered", "withering", "yellowing",
         "yellow leaves", "spots on", "leaf spot", "disease", "sick", "dying",
@@ -53,6 +54,22 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
         "infected", "infection", "fungus", "blight", "curling",
         "looks wrong", "something wrong", "not looking right",
         "turning brown", "falling off", "wrong with my",
+    ],
+    "crop": [
+        "what should i plant", "what should i grow", "what to plant",
+        "what to grow", "suitable to plant", "good to plant", "good crop",
+        "which crop", "what crop", "plant now", "grow now", "planting season",
+        "suitable crop", "recommend a crop", "should i grow",
+        # Bare words -- ASR regularly mangles the start of a question
+        # ("what crops" came back as "But crops I have"), so full-phrase
+        # matches alone missed real crop questions.
+        "crop", "grow", "planting", "harvest", "sow", "sowing", "seed",
+        "cultivate",
+    ],
+    "weather": [
+        "weather", "forecast", "rain", "raining", "rainfall", "temperature",
+        "humid", "humidity", "hot", "cold", "sunny", "sunshine", "storm",
+        "wind", "windy", "climate", "degrees",
     ],
 }
 
@@ -71,6 +88,32 @@ def detect_domain(text: str) -> str | None:
             if keyword in lowered:
                 return domain
     return None
+
+
+def classify_with_llm(text: str, recent_turns: str = "") -> str | None:
+    """Fallback for messages no keyword matched. Returns "weather", "crop",
+    "plant", or None when the message is unclear (cut off, not a farming
+    question, the assistant's own words echoed back) or no model is
+    available -- the caller should then ask the farmer to repeat."""
+    context = f"Recent conversation:\n{recent_turns}\n\n" if recent_turns else ""
+    prompt = (
+        "A farm voice assistant has three specialists:\n"
+        "weather - weather conditions or forecasts: rain, temperature, wind, humidity, any day\n"
+        "crop - what to plant or grow, crop suitability, planting or harvest timing, "
+        "general crop care like watering, spacing or fertiliser\n"
+        "plant - a sick or damaged plant: symptoms, pests, diseases\n\n"
+        "Classify the farmer's latest message. Use the recent conversation to understand "
+        "short follow-ups like 'and tomorrow?'. Answer unclear if the message is cut off, "
+        "garbled, not a farming question, or sounds like the assistant talking.\n\n"
+        f"{context}Latest message: \"{text}\"\n\n"
+        "Answer with one word: weather, crop, plant, or unclear."
+    )
+    try:
+        raw = llm_client.generate(prompt, system_instruction=_CLASSIFIER_SYSTEM)
+    except RuntimeError:
+        return None
+    word = re.sub(r"[^a-z]", "", raw.strip().lower().split()[0]) if raw.strip() else ""
+    return word if word in ("weather", "crop", "plant") else None
 
 
 def suggest_redirect(text: str, active_domain: str) -> str | None:

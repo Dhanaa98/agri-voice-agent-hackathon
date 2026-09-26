@@ -10,11 +10,39 @@ suitability itself, per the brief's reliability guidance for live demos.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .. import llm_client
 from ..farm_state import FarmProfile
 from .crop_data import CROPS, CropProfile
+
+
+_CROP_NAME_ALIASES = {
+    "oilseed rape": "canola",
+    "rapeseed": "canola",
+    "eggplant": "brinjal",
+    "aubergine": "brinjal",
+    "tapioca": "cassava",
+    "manioc": "cassava",
+    "sugarbeet": "sugar beet",
+}
+
+
+def mentioned_crops(question: str | None) -> list[str]:
+    """Crop names from CROPS (or their common alternative names) that
+    appear as whole words in the question, plurals too, longest names
+    first so "pigeon pea" isn't also counted as "pea"."""
+    text = (question or "").lower()
+    found = []
+    for name in sorted(set(CROPS) | set(_CROP_NAME_ALIASES), key=len, reverse=True):
+        pattern = r"\b" + re.escape(name) + r"(?:s|es)?\b"
+        if re.search(pattern, text):
+            crop = _CROP_NAME_ALIASES.get(name, name)
+            if crop not in found:
+                found.append(crop)
+            text = re.sub(pattern, " ", text)
+    return found
 
 
 @dataclass
@@ -87,18 +115,20 @@ class CropAgent:
             return None
         return assess_crop(profile, farm)
 
-    def handle(self, farm: FarmProfile, crop_name: str | None = None) -> str:
-        """Return a spoken-style crop-suitability answer.
+    def handle(self, farm: FarmProfile, crop_name: str | None = None, question: str | None = None) -> str:
+        """Answer the farmer's crop question.
 
-        If crop_name is given, assess that one crop; otherwise assess the
-        fixed crop set and recommend the best-fitting options.
+        Crops named in `crop_name` or in the question itself ("can I grow
+        tomatoes and onions now") are assessed specifically; otherwise the
+        best-fitting crops are recommended. The suitability verdicts are
+        deterministic; the LLM answers the actual question from them.
         """
-        if crop_name:
-            assessment = self.assess_one(crop_name, farm)
-            if assessment is None:
+        names = [crop_name.lower()] if crop_name else mentioned_crops(question)
+        if names:
+            assessments = [a for a in (self.assess_one(n, farm) for n in names) if a is not None]
+            if not assessments:
                 known = ", ".join(CROPS.keys())
-                return f"I don't have suitability data for {crop_name} yet. I currently cover: {known}."
-            assessments = [assessment]
+                return f"I don't have suitability data for {names[0]} yet. I currently cover: {known}."
         else:
             # With no crop named, the farmer wants recommendations, not a
             # full 45-crop ledger -- feeding every entry to the LLM made
@@ -124,8 +154,12 @@ class CropAgent:
         deterministic_summary = "\n".join(summary_lines)
 
         prompt = (
-            "Give a 2-4 sentence spoken answer to a crop-suitability question, "
-            "based only on the assessment below.\n\n"
+            "Answer the farmer's question in 2-4 short spoken sentences. Answer exactly what "
+            "they asked. Suitability verdicts and anything about THIS farm's conditions must "
+            "come only from the assessment and farm context below. If the question goes beyond "
+            "them (watering, spacing, fertiliser, timing), you may add brief, widely accepted "
+            "general guidance, but never invent numbers or facts about this farm.\n\n"
+            f"Farmer's question: {question or 'What should I plant?'}\n\n"
             f"Farm context:\n{farm.to_prompt_context()}\n\n"
             f"{farm.recent_chat_context('crop')}\n\n"
             f"Assessment:\n{deterministic_summary}"

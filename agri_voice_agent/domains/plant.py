@@ -55,6 +55,8 @@ and feeding it each ASR transcript in turn until it reports done.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 
 from .. import llm_client
@@ -66,10 +68,84 @@ from .plant_data import (
     RegionalControl,
     SymptomCategory,
     WeatherTrigger,
+    detect_crop,
     get_named_diseases,
 )
 
+# Without the LLM the doctor falls back to the fixed per-category questions,
+# of which each category has two.
 MAX_FOLLOW_UPS = 2
+
+# With the LLM: keep asking until one candidate clearly leads, up to this many
+# questions. "Clearly leads" is a deterministic rule on the normalised
+# likelihoods, not the model's own say-so.
+MAX_QUESTIONS = 5
+CONFIDENT_LIKELIHOOD = 0.7
+CONFIDENT_MARGIN = 0.25
+# Diagnose straight from the first description, with no questions, only when
+# it is this unambiguous (e.g. the farmer names the textbook symptoms).
+NO_QUESTION_LIKELIHOOD = 0.9
+
+NOT_A_DISEASE = "Not a disease (watering, nutrient, weather or chemical damage)"
+UNLISTED = "Something not listed here"
+ASK_CROP_QUESTION = "Which crop or plant is this happening on?"
+ASK_SYMPTOM_QUESTION = (
+    "What exactly do you see on the plant -- spots, yellowing, wilting, curled leaves, "
+    "a powdery or fuzzy mould, or rotting?"
+)
+UNRECOGNISED_TEXT = (
+    "I couldn't quite match that to a symptom I recognize. Could you describe "
+    "it differently -- for example, is it wilting, spotted, yellowing, or "
+    "discolored leaves?"
+)
+
+_ASSESS_SYSTEM = (
+    "You are a careful plant pathologist helping diagnose a crop problem by voice. "
+    "Reply with a single JSON object and nothing else."
+)
+
+# Words too common in symptom text to tell diseases apart.
+_GENERIC_WORDS = {
+    "leaf", "leaves", "plant", "plants", "have", "with", "that", "this", "they", "from", "there",
+    "then", "some", "into", "also", "more", "when", "which", "their", "them", "were", "been",
+    "mostly", "very", "just", "like", "looks", "look", "getting", "turning", "become", "becomes",
+}
+
+
+def _symptom_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 3 and w not in _GENERIC_WORDS}
+
+
+def _parse_json_object(raw: str) -> dict | None:
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(0))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def rank_named_diseases(crop: str, category: str | None, description: str, limit: int = 4) -> list[NamedDisease]:
+    """The crop's named diseases that fit the farmer's description, best
+    match first. A disease qualifies if it's in the matched symptom category
+    or its documented symptoms share at least two distinctive words with
+    what the farmer said -- the keyword category alone is too coarse
+    ("dark oily blotches with white mould" matched leaf_spot, which used to
+    hide late blight, filed under drying_blight). Capped at four so the
+    LLM prompt stays small."""
+    said = _symptom_words(description)
+    scored = []
+    for disease in get_named_diseases(crop):
+        overlap = len(said & _symptom_words(f"{disease.name} {disease.symptoms}"))
+        in_category = disease.symptom_category == category
+        # With no symptom category yet, every disease on the crop stays in
+        # play and word overlap alone orders them.
+        if category is None or in_category or overlap >= 2:
+            scored.append((overlap + (1 if in_category else 0), disease))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [disease for _, disease in scored[:limit]]
 
 # Keyword -> symptom category, used to map free-text symptom descriptions
 # onto the structured categories in plant_data.py without an LLM call.
@@ -139,6 +215,12 @@ _SYMPTOM_KEYWORDS: dict[str, str] = {
     "brown": "drying_blight",
     "blight": "drying_blight",
     "dying": "drying_blight",
+    # Powdery and downy mildews are filed as leaf_spot (see "mildew" above);
+    # farmers usually describe them by what they see instead.
+    "powder": "leaf_spot",
+    "mould": "leaf_spot",
+    "mold": "leaf_spot",
+    "fuzz": "leaf_spot",
 }
 
 # Phrasings that suggest the problem may not be biological at all -- an
@@ -272,16 +354,28 @@ class PlantSession:
     initial_symptom_text: str = ""
     matched_category: str | None = None
     answers: list[str] = field(default_factory=list)
-    questions_asked: list[FollowUpQuestion] = field(default_factory=list)
+    # The questions actually put to the farmer, in order (answers[i] replies
+    # to questions_asked[i]).
+    questions_asked: list[str] = field(default_factory=list)
     done: bool = False
     abiotic_hint: bool = False
+    # Latest normalised candidate -> likelihood from _assess(), best first.
+    likelihoods: dict[str, float] = field(default_factory=dict)
     _farm: FarmProfile | None = field(default=None, repr=False)
 
-    def _remaining_questions(self) -> list[FollowUpQuestion]:
+    @property
+    def top_candidate(self) -> str | None:
+        return next(iter(self.likelihoods), None)
+
+    def _static_questions_left(self) -> list[FollowUpQuestion]:
         if self.matched_category is None:
             return []
         category = SYMPTOM_CATEGORIES[self.matched_category]
-        return [q for q in category.follow_up_questions if q not in self.questions_asked]
+        return [q for q in category.follow_up_questions if q.prompt not in self.questions_asked]
+
+    def _ask(self, question: str) -> str:
+        self.questions_asked.append(question)
+        return question
 
     def start(self, symptom_text: str, crop: str | None = None) -> str:
         """Begin the conversation with the farmer's initial symptom report."""
@@ -291,21 +385,115 @@ class PlantSession:
         if has_abiotic_hint(symptom_text):
             self.abiotic_hint = True
 
-        if self.matched_category is None:
+        return self._next_turn()
+
+    def _next_turn(self) -> str:
+        """Ask the next question, or diagnose once one candidate clearly
+        leads -- after as few as one question, at most MAX_QUESTIONS."""
+        # A vague opening ("something's wrong with my tomatoes") is exactly
+        # when questions help most, so ask what they see rather than give up.
+        if self.matched_category is None and ASK_SYMPTOM_QUESTION not in self.questions_asked:
+            return self._ask(ASK_SYMPTOM_QUESTION)
+        # Knowing the crop is what unlocks the named-disease entries, so it's
+        # worth one question when the farmer didn't say.
+        if self.crop is None and ASK_CROP_QUESTION not in self.questions_asked:
+            return self._ask(ASK_CROP_QUESTION)
+        # Still no recognisable symptom and no crop entries to fall back on.
+        if self.matched_category is None and not (self.crop and get_named_diseases(self.crop)):
             self.done = True
-            return (
-                "I couldn't quite match that to a symptom I recognize. Could you describe "
-                "it differently -- for example, is it wilting, spotted, yellowing, or "
-                "discolored leaves?"
-            )
+            return UNRECOGNISED_TEXT
 
-        remaining = self._remaining_questions()
-        if not remaining or len(self.questions_asked) >= MAX_FOLLOW_UPS:
+        assessment = self._assess()
+        if assessment is None:
+            # No LLM available: the original fixed two-question flow.
+            remaining = self._static_questions_left()
+            static_asked = sum(1 for q in self.questions_asked if q not in (ASK_CROP_QUESTION, ASK_SYMPTOM_QUESTION))
+            if not remaining or static_asked >= MAX_FOLLOW_UPS:
+                return self._final_diagnosis()
+            return self._ask(remaining[0].prompt)
+
+        self.likelihoods, next_question = assessment
+        ranked = list(self.likelihoods.values())
+        top = ranked[0]
+        runner_up = ranked[1] if len(ranked) > 1 else 0.0
+        confident = top >= CONFIDENT_LIKELIHOOD and top - runner_up >= CONFIDENT_MARGIN
+        if confident and (self.answers or top >= NO_QUESTION_LIKELIHOOD):
             return self._final_diagnosis()
+        if len(self.questions_asked) >= MAX_QUESTIONS:
+            return self._final_diagnosis()
+        if not next_question or next_question in self.questions_asked:
+            return self._final_diagnosis()
+        return self._ask(next_question)
 
-        question = remaining[0]
-        self.questions_asked.append(question)
-        return self._phrase_question(question)
+    def _candidates(self) -> list[tuple[str, str]]:
+        """The options the assessment may choose between -- this crop's own
+        knowledge-base diseases that fit the description (or, with no crop
+        entries, the symptom category's broad causes), plus "not a disease"
+        and "something not listed" so a poor fit is never forced onto a
+        named disease."""
+        described = " ".join([self.initial_symptom_text, *self.answers])
+        options: list[tuple[str, str]] = []
+        if self.crop:
+            options = [
+                (d.name, d.symptoms)
+                for d in rank_named_diseases(self.crop, self.matched_category, described, limit=6)
+            ]
+        if not options and self.matched_category:
+            options = [
+                (f"{cause.replace('_', ' ')} problem", why)
+                for cause, why in SYMPTOM_CATEGORIES[self.matched_category].likely_causes.items()
+                if cause != "physical"
+            ]
+        options.append((NOT_A_DISEASE, "watering, drainage, nutrient shortage, heat/cold or chemical/herbicide damage; usually affects plants evenly or several kinds of plant and doesn't spread"))
+        options.append((UNLISTED, "none of the other options fits the description well"))
+        return options
+
+    def _assess(self) -> tuple[dict[str, float], str | None] | None:
+        """Ask the LLM how likely each candidate is given the conversation so
+        far, and which single question would best separate the leaders.
+        Returns (likelihoods best-first, next question), or None when no LLM
+        is available or its reply can't be used."""
+        options = self._candidates()
+        option_lines = "\n".join(f"- {name}: {looks_like}" for name, looks_like in options)
+        conversation = [f"Farmer's first description: {self.initial_symptom_text}"]
+        for question, answer in zip(self.questions_asked, self.answers):
+            conversation.append(f"Asked: {question}")
+            conversation.append(f"Farmer answered: {answer}")
+        farm_context = self._farm.to_prompt_context() if self._farm is not None else "unknown"
+        prompt = (
+            f"Crop: {self.crop or 'unknown'}\n"
+            f"Farm and weather: {farm_context}\n\n"
+            f"Candidates (use these exact names only):\n{option_lines}\n\n"
+            "Conversation so far:\n" + "\n".join(conversation) + "\n\n"
+            "Score how likely each candidate is from the farmer's evidence only; give low scores "
+            "to anything the answers contradict. Then write the ONE short, plain question a farmer "
+            "could answer just by looking at the plant that would best tell the top candidates apart. "
+            "Never ask about the same feature twice: if the farmer couldn't answer a question, switch "
+            "to a different, easier-to-check sign (which leaves or parts, how fast it spread, recent "
+            "weather, other plants affected, roots or stems, smell or ooze).\n\n"
+            'Reply as JSON: {"likelihoods": {"<candidate name>": <0 to 1>, ...}, "next_question": "<question>"}'
+        )
+        try:
+            raw = llm_client.generate(prompt, system_instruction=_ASSESS_SYSTEM)
+        except RuntimeError:
+            return None
+        data = _parse_json_object(raw)
+        if data is None or not isinstance(data.get("likelihoods"), dict):
+            return None
+
+        by_lower = {name.lower(): name for name, _ in options}
+        scores: dict[str, float] = {}
+        for key, value in data["likelihoods"].items():
+            name = by_lower.get(str(key).strip().lower())
+            if name is not None and isinstance(value, (int, float)) and value > 0:
+                scores[name] = float(value)
+        total = sum(scores.values())
+        if total <= 0:
+            return None
+        ranked = dict(sorted(((n, s / total) for n, s in scores.items()), key=lambda p: p[1], reverse=True))
+        question = data.get("next_question")
+        question = question.strip() if isinstance(question, str) and question.strip() else None
+        return ranked, question
 
     def respond(self, answer_text: str) -> str:
         """Feed the farmer's answer to the last follow-up question.
@@ -318,7 +506,9 @@ class PlantSession:
         if self.done:
             return "This diagnosis is already complete. Say the wake word again to start a new one."
 
-        correction_markers = ("no wait", "actually", "i mean", "sorry i meant", "correction")
+        # Only unmistakable restarts -- "actually" and "I mean" turn up in
+        # ordinary answers too, and would throw away every answer so far.
+        correction_markers = ("no wait", "sorry i meant", "correction", "start again", "start over")
         if any(marker in answer_text.lower() for marker in correction_markers):
             return self.start(answer_text, crop=self.crop)
 
@@ -326,26 +516,22 @@ class PlantSession:
             self.abiotic_hint = True
 
         self.answers.append(answer_text)
+        if self.crop is None:
+            self.crop = detect_crop(answer_text)
+        if self.matched_category is None:
+            self.matched_category = match_symptom_category(answer_text)
 
-        remaining = self._remaining_questions()
-        if not remaining or len(self.questions_asked) >= MAX_FOLLOW_UPS:
-            return self._final_diagnosis()
-
-        question = remaining[0]
-        self.questions_asked.append(question)
-        return self._phrase_question(question)
-
-    def _phrase_question(self, question: FollowUpQuestion) -> str:
-        try:
-            return llm_client.generate(
-                "Rephrase this follow-up question for a farmer in one short, natural "
-                f"spoken sentence, keeping the same meaning exactly:\n\n{question.prompt}"
-            )
-        except RuntimeError:
-            return question.prompt
+        return self._next_turn()
 
     def _final_diagnosis(self) -> str:
         self.done = True
+        if self.matched_category is None:
+            # The farmer never used a recognised symptom word, but a crop
+            # disease was identified -- use that disease's own category.
+            top = next((d for d in get_named_diseases(self.crop or "") if d.name == self.top_candidate), None)
+            if top is None:
+                return UNRECOGNISED_TEXT
+            self.matched_category = top.symptom_category
         category = SYMPTOM_CATEGORIES[self.matched_category]
 
         causes = (
@@ -356,17 +542,53 @@ class PlantSession:
 
         named: list[NamedDisease] = []
         if self.crop:
-            named = [d for d in get_named_diseases(self.crop) if d.symptom_category == self.matched_category]
+            description = " ".join([self.initial_symptom_text, *self.answers])
+            named = rank_named_diseases(self.crop, self.matched_category, description, limit=6)
+            if self.likelihoods:
+                # Order by the conversation's assessment, and drop diseases
+                # the farmer's answers effectively ruled out.
+                named = [d for d in named if self.likelihoods.get(d.name, 0) >= 0.1] or named
+                named.sort(key=lambda d: self.likelihoods.get(d.name, 0), reverse=True)
+            named = named[:4]
 
         summary_lines = [
             f"Symptom category: {category.name} ({category.description})",
-            "Likely causes, in order of likelihood given current conditions:",
+            "Broad cause categories for this symptom (background), weather-weighted:",
         ]
         for cause, explanation in causes:
             summary_lines.append(f"  - {cause}: {explanation}")
 
+        if self.likelihoods:
+            # Only real contenders -- a 5% "not a disease" otherwise gets
+            # read out as a caveat on a clear diagnosis.
+            contenders = [(n, s) for n, s in self.likelihoods.items() if s >= 0.15][:3]
+            ranked = ", ".join(f"{name} ({share:.0%})" for name, share in contenders)
+            summary_lines.append(
+                f"Assessment from the farmer's answers ({len(self.questions_asked)} questions asked): {ranked}"
+            )
+            shares = list(self.likelihoods.values())
+            clear_leader = shares[0] >= CONFIDENT_LIKELIHOOD and shares[0] - (shares[1] if len(shares) > 1 else 0) >= CONFIDENT_MARGIN
+            if not clear_leader:
+                summary_lines.append(
+                    "The answers did NOT clearly separate the top candidates: present the top two as "
+                    "possibilities rather than a firm diagnosis, give the control steps that suit both, and "
+                    "suggest a closer look at the leaves or showing a sample to a local extension officer."
+                )
+            if self.top_candidate == NOT_A_DISEASE:
+                summary_lines.append(
+                    "The answers point away from a disease: explain the likely watering, nutrient, weather "
+                    "or chemical cause instead of recommending fungicide."
+                )
+            elif self.top_candidate == UNLISTED:
+                summary_lines.append(
+                    "None of the known diseases fits clearly: say so honestly, give the broad likely cause, "
+                    "and suggest showing a sample to a local extension officer or plant clinic."
+                )
+
         if named:
-            summary_lines.append("Specific diseases matching this symptom on this crop:")
+            summary_lines.append(
+                "Specific diseases on this crop that fit the description, most likely first:"
+            )
             country_code = self._farm.country_code if self._farm is not None else ""
             for disease in named:
                 line = f"  - {disease.name} ({disease.scientific_name}): {disease.symptoms}"
@@ -397,8 +619,12 @@ class PlantSession:
                         line += f" Current weather does not match this disease's known risk conditions ({disease.weather_trigger.description})."
                 summary_lines.append(line)
 
-        answers_text = "; ".join(self.answers) if self.answers else "(no follow-up answers given)"
-        summary_lines.append(f"Farmer's answers to follow-up questions: {answers_text}")
+        if self.answers:
+            summary_lines.append("Follow-up questions and the farmer's answers:")
+            for question, answer in zip(self.questions_asked, self.answers):
+                summary_lines.append(f"  - Q: {question} A: {answer}")
+        else:
+            summary_lines.append("No follow-up questions were needed.")
 
         if self.abiotic_hint:
             summary_lines.append(
@@ -413,10 +639,17 @@ class PlantSession:
 
         prompt = (
             "Conclude this plant-health diagnosis with a 3-5 sentence spoken answer, "
-            "based only on the assessment below: state the most likely cause first, "
-            "mention the current weather's role if relevant, and give one practical "
-            "next step. If a caveat about a possible nonliving cause is present, "
-            "mention it clearly rather than glossing over it.\n\n"
+            "based only on the assessment below. If specific diseases are listed, name the "
+            "most likely one (the first listed, which the farmer's answers support best) -- "
+            "unless the assessment says the answers didn't separate them, in which case be "
+            "honest that it's one of the top two. "
+            "Mention the current weather's "
+            "role if relevant. Then give the control steps listed for that disease, including "
+            "any product, dose or regional advice given -- don't swap in advice that isn't "
+            "listed, and say it as plain advice without reading out source or region names. "
+            "The broad cause list is background only: mention a non-disease cause (watering, "
+            "nutrients, chemicals) only if a 'Caveat' line is present or the assessment points "
+            "away from a disease.\n\n"
             f"Farm context:\n{self._farm.to_prompt_context() if self._farm is not None else 'unknown'}\n\n"
             f"{self._farm.recent_chat_context('plant') if self._farm is not None else ''}\n\n"
             f"Initial symptom described: {self.initial_symptom_text}\n\n"
@@ -452,17 +685,25 @@ class PlantAgent:
             session = PlantSession()
             session.set_farm(farm)
             self._active_sessions[session_id] = session
-            response = session.start(transcript, crop=crop)
+            # Voice and chat never pass a crop explicitly, so take it from the
+            # farmer's own words -- without this, named diseases were never
+            # consulted outside the manual tests.
+            response = session.start(transcript, crop=crop or detect_crop(transcript))
         else:
             response = session.respond(transcript)
 
         if session.done and session.matched_category is not None:
             category_name = session.matched_category
             top_cause = weather_adjusted_causes(SYMPTOM_CATEGORIES[category_name], farm)[0][0]
+            identified = session.top_candidate
+            if identified and identified not in (NOT_A_DISEASE, UNLISTED):
+                diagnosis = f"{identified} ({category_name})"
+            else:
+                diagnosis = f"{category_name} (likely cause: {top_cause})"
             farm.add_symptom_report(
                 crop=session.crop or "unspecified",
                 symptoms=session.initial_symptom_text,
-                diagnosis=f"{category_name} (likely cause: {top_cause})",
+                diagnosis=diagnosis,
             )
 
         return response

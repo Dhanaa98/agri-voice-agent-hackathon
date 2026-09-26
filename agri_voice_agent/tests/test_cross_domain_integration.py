@@ -38,7 +38,7 @@ import sys
 
 from .. import config
 from ..domains.crop import CropAgent
-from ..domains.plant import PlantAgent
+from ..domains.plant import SYMPTOM_CATEGORIES, PlantAgent, weather_adjusted_causes
 from ..domains.weather import WeatherAgent
 from ..farm_state import FarmProfile, WeatherSnapshot
 
@@ -73,6 +73,12 @@ def run_plant_diagnosis(state: FarmProfile, session_id: str) -> str:
     for turn in turns:
         print(f"  [plant] farmer: {turn}")
         response = agent.handle(state, turn, crop=CROP_UNDER_TEST, session_id=session_id)
+    # The doctor asks as many questions as it needs (up to plant.MAX_QUESTIONS),
+    # so keep answering until it reaches a diagnosis.
+    while not agent.is_done(session_id):
+        print(f"  [plant] doctor: {response[:120]}")
+        print("  [plant] farmer: I'm not sure")
+        response = agent.handle(state, "I'm not sure", crop=CROP_UNDER_TEST, session_id=session_id)
     print(f"  [plant] final: {response[:200]}{'...' if len(response) > 200 else ''}")
 
     matching = [r for r in state.recent_symptoms_reported if r.crop.lower() == CROP_UNDER_TEST]
@@ -97,10 +103,11 @@ def run_scenario(label: str, state: FarmProfile, session_id: str) -> tuple[str, 
     # Prove Plant's output actually reaches Crop: the diagnosis text (or
     # its cause keyword) must show up somewhere in Crop's deterministic
     # disease_warnings, not just sit unused in farm_state.
-    cause_keyword = diagnosis.split("likely cause: ")[-1].rstrip(")") if "likely cause:" in diagnosis else diagnosis
-    assert cause_keyword and cause_keyword in crop_response, (
-        f"expected Crop's response to reference the Plant diagnosis's cause "
-        f"({cause_keyword!r}) -- cross-domain link is broken.\nCrop response was:\n{crop_response}"
+    # Checked against Crop's deterministic warnings, not the LLM's wording.
+    warnings = " ".join(CropAgent().assess_one(CROP_UNDER_TEST, state).disease_warnings)
+    assert diagnosis and diagnosis in warnings, (
+        f"expected Crop's assessment to carry the Plant diagnosis ({diagnosis!r}) -- "
+        f"cross-domain link is broken.\nCrop warnings were:\n{warnings}"
     )
     print("  [check] Crop response references the Plant diagnosis -- cross-domain link confirmed\n")
     return diagnosis, crop_response
@@ -135,15 +142,21 @@ def main() -> None:
     apply_synthetic_weather(dry_state, humid=False)
     dry_diagnosis, _ = run_scenario("Dry weather", dry_state, "dry-session")
 
-    assert humid_diagnosis != dry_diagnosis, (
-        "expected the same symptom under different weather to produce different "
-        f"diagnoses, but both were {humid_diagnosis!r} -- cross-domain weather "
-        "reasoning is not actually shifting the outcome."
+    # The named diagnosis is evidence-driven since the adaptive doctor (a
+    # plant that stays wilted after watering is bacterial wilt in any
+    # weather), so weather no longer has to flip it. What must still differ
+    # is the deterministic weather weighting of broad causes.
+    wilt = SYMPTOM_CATEGORIES["wilt"]
+    humid_cause = weather_adjusted_causes(wilt, humid_state)[0][0]
+    dry_cause = weather_adjusted_causes(wilt, dry_state)[0][0]
+    assert humid_cause != dry_cause, (
+        f"expected weather to reorder the broad causes, but both led with {humid_cause!r} -- "
+        "cross-domain weather reasoning is not reaching the Plant domain."
     )
-    print(f"[check] Humid weather -> {humid_diagnosis!r}")
-    print(f"[check] Dry weather   -> {dry_diagnosis!r}")
+    print(f"[check] Humid weather -> {humid_diagnosis!r}, leading broad cause {humid_cause!r}")
+    print(f"[check] Dry weather   -> {dry_diagnosis!r}, leading broad cause {dry_cause!r}")
     print("\nALL CROSS-DOMAIN INTEGRATION CHECKS PASSED.")
-    print("Weather -> Plant: diagnosis differs by weather.")
+    print("Weather -> Plant: broad causes are weather-weighted.")
     print("Plant -> Crop: Crop's advice references Plant's diagnosis in both scenarios.")
 
 

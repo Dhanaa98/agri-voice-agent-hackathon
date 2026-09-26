@@ -75,6 +75,15 @@ Two layers, per the project's decided approach (see build log):
       plant_pathology_reference.md's Sources table entries 16-18 and its
       sixth-extraction-pass Summary note for full detail.
 
+   d. An eighth pass (2026-09-26) added internationally relevant crops and
+      region-tagged advice for a US/UK/Canada/Australia/Europe audience
+      alongside Sri Lanka: tomato's missing common diseases (early/late
+      blight, Septoria, powdery mildew, bacterial wilt, TYLCV), potato late
+      and early blight, apple scab, three more brinjal diseases, and new
+      canola, avocado, olive, blueberry, sugar beet, cassava and pineapple
+      sections -- see the "Eighth extraction pass" block below
+      NAMED_DISEASES and plant_pathology_reference.md Sources 19-33.
+
 Neither source is fetched or re-interpreted at runtime -- this is a
 one-time hand conversion into structured data, consistent with the
 crop_data.py pattern. The diagnostic agent (plant.py) walks this
@@ -84,6 +93,7 @@ LLM only phrases the conversation, it does not invent disease facts.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -4008,6 +4018,646 @@ NAMED_DISEASES: dict[str, list[NamedDisease]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Eighth extraction pass (2026-09-26): internationally relevant diseases and
+# region-tagged mitigation, so the same disease can give a UK, US, Canadian,
+# Australian or Sri Lankan farmer advice valid where they farm. Sources are
+# plant_pathology_reference.md Sources 19-33. Region-specific products and
+# doses are tagged with country codes; general practice is untagged.
+#
+# Tomato and potato were previously missing their most common diseases
+# worldwide (early/late blight, Septoria, bacterial wilt, TYLCV), so these
+# additions meet the "best-documented" bar the tomato slice's docstring note
+# asks for: national government (Sri Lanka DOA) and state extension (UC IPM)
+# guidance.
+# ---------------------------------------------------------------------------
+
+_LK = (["LK"], "Sri Lanka (Department of Agriculture)")
+_US_CA = (["US"], "California, US (UC IPM)")
+_US_ND = (["US"], "North Dakota / Minnesota, US (NDSU Extension)")
+_US_NC = (["US"], "North Carolina, US (NC State Extension)")
+_GB = (["GB"], "United Kingdom")
+_CA = (["CA"], "Canada (Canola Council of Canada)")
+_AU = (["AU"], "Australia (CropLife Australia)")
+
+
+def _rc(text: str, region: tuple[list[str], str] | None = None) -> RegionalControl:
+    if region is None:
+        return RegionalControl(text)
+    return RegionalControl(text, region[0], region[1])
+
+
+# Earlier passes left 42 diseases with ONLY country-tagged control advice
+# (mostly TNAU/India and GRDC/Australia), so a farmer anywhere else got no
+# advice at all. Each gets a general entry distilled from that same source
+# text -- the practices (rotation, sanitation, roguing, seed treatment,
+# resistant varieties, spray timing) with the country's specific products,
+# doses and cultivar names left in the tagged entry. Nothing here adds a
+# fact the source didn't give.
+_GENERAL_PRACTICE: dict[tuple[str, str], str] = {
+    ("rice", "Kernel smut"): "Use semi-dwarf varieties where smut has occurred, and avoid excess nitrogen and deep floodwater on susceptible varieties.",
+    ("rice", "Narrow brown leaf spot"): "Early-maturing varieties tend to escape damage; time any fungicide so it also covers other rice diseases present.",
+    ("rice", "Seedling blight and seed decay"): "Sow high-quality, treated seed shallowly into warm soil rather than cold, wet soil.",
+    ("okra", "Blossom and fruit blight"): "Improve air circulation and avoid wetting flowers and young pods; where it recurs, use a fungicide registered locally.",
+    ("wheat", "Foot rot"): "Rotate crops and use a seed treatment registered locally.",
+    ("wheat", "Crown rot"): "Rotate with non-cereal crops (pulses, oilseeds) for at least two seasons, control grass weeds, don't over-fertilise with nitrogen, keep zinc adequate, and test soil for inoculum before sowing where testing is available.",
+    ("wheat", "Take-all root disease"): "Use a non-cereal break crop (e.g. lupins, canola, peas) and control grass weeds in autumn; there is no in-crop cure.",
+    ("wheat", "Pythium root rot"): "Control weeds, use diverse rotations, and consider a Pythium-selective seed dressing registered locally.",
+    ("wheat", "Yellow spot (tan spot)"): "Rotate crops, avoid very susceptible varieties, keep nitrogen and potassium adequate, and spray a registered foliar fungicide when disease moves up the canopy.",
+    ("wheat", "Septoria nodorum blotch (glume blotch)"): "Rotate crops, keep nitrogen and potassium balanced, and protect the crop with a registered fungicide before heading is complete.",
+    ("wheat", "Fusarium head blight (FHB)"): "No cure: avoid growing cereals back-to-back and don't sow cereals into or beside fields with undecomposed maize or sorghum residue.",
+    ("wheat", "Root lesion nematodes (RLN)"): "Rotate with resistant or non-host break crops, keep nutrition (especially N, P and zinc) adequate, control weeds, and clean soil off machinery between fields.",
+    ("finger millet", "Blast"): "Treat seed before sowing and spray a registered fungicide as soon as symptoms appear, repeating at flowering.",
+    ("finger millet", "Seedling blight / leaf spot"): "Treat nursery seed with a registered fungicide or biocontrol seed treatment.",
+    ("finger millet", "Mosaic / Mottle streak"): "Pull out and destroy infected plants early and control the insect vectors.",
+    ("cotton", "Verticillium wilt"): "Treat seed, destroy infected debris after deep summer ploughing, add plenty of manure or compost, rotate 2-3 years with non-hosts such as rice or lucerne, and grow resistant or tolerant varieties.",
+    ("cotton", "Leaf blight (Alternaria leaf spot)"): "Protect the crop with a registered fungicide at regular intervals through the season (e.g. 60, 90 and 120 days after sowing).",
+    ("cotton", "Areolate mildew (grey mildew)"): "Protect the crop with a registered fungicide at regular intervals through the season (e.g. 60, 90 and 120 days after sowing).",
+    ("cotton", "Bacterial blight (angular leaf spot / black arm)"): "Use treated, acid-delinted seed, remove infected debris, volunteer cotton and weed hosts, rotate with non-host crops, and grow resistant varieties.",
+    ("blackgram", "Root rot"): "Treat seed with Trichoderma or Pseudomonas biocontrol (or a registered fungicide), and add organic matter such as well-rotted manure.",
+    ("blackgram", "Powdery mildew"): "Spray neem-based products or a registered fungicide (e.g. sulphur) when it first appears and again 10 days later.",
+    ("blackgram", "Leaf spot"): "Spray a registered fungicide when spots first appear and again 10 days later.",
+    ("blackgram", "Rust"): "Spray a registered fungicide (e.g. sulphur) when rust first appears and again 10 days later.",
+    ("blackgram", "Yellow mosaic"): "Grow resistant varieties, pull out infected plants early, use yellow sticky traps, and control whitefly.",
+    ("blackgram", "Leaf crinkle"): "Grow resistant varieties, pull out infected plants early, and control the insect vectors.",
+    ("gram", "Ascochyta blight"): "Remove and destroy infected crop debris, sow treated seed, rotate with cereals, and spray a registered fungicide when blight appears.",
+    ("gram", "Wilt"): "Treat seed with a registered fungicide or Trichoderma/Pseudomonas, add organic manure, and grow wilt-resistant varieties.",
+    ("pigeon pea", "Sterility mosaic"): "Pull out infected plants early and control the eriophyid mite that spreads it.",
+    ("groundnut", "Collar rot / Seedling blight / Crown rot"): "Rotate crops, destroy last season's infected debris, and treat seed and soil with Trichoderma along with organic amendments.",
+    ("groundnut", "Root rot"): "Apply Pseudomonas biocontrol with well-rotted manure to the soil, and drench around affected plants with a registered fungicide.",
+    ("groundnut", "Ring mosaic / Bud necrosis / Bud blight"): "Sow at close spacing, pull out infected plants during the first six weeks, and control the thrips vector.",
+    ("sunflower", "Leaf blight"): "Deep summer ploughing, proper spacing, clean cultivation, crop rotation, well-rotted manure, removing diseased plants, treated seed, and a registered fungicide if needed.",
+    ("sunflower", "Rust"): "Spray a registered fungicide when rust appears, repeating after about 15 days if needed.",
+    ("sunflower", "Head rot"): "Protect flower heads with a registered fungicide during rainy spells at head stage, repeating if humid weather continues.",
+    ("sunflower", "Root rot / Charcoal rot"): "Apply Pseudomonas or Trichoderma biocontrol with well-rotted manure to the soil, and drench around affected plants with a registered fungicide.",
+    ("sunflower", "Sunflower necrosis disease"): "Grow a border crop such as sorghum a month before sowing and control the thrips vector.",
+    ("turmeric", "Leaf Spot"): "Plant rhizomes from disease-free areas, treat seed rhizomes, burn infected leaves, rotate crops, grow tolerant varieties, and spray a registered fungicide at fortnightly intervals.",
+    ("sesame", "Phyllody"): "Remove and destroy infected plants, control the leafhopper vector, and intercrop with pigeon pea.",
+    ("sesame", "Root rot (Charcoal rot)"): "Apply Pseudomonas or Trichoderma biocontrol with well-rotted manure to the soil, and drench around affected plants with a registered fungicide.",
+    ("sesame", "Leaf blight"): "Spray a registered fungicide when blight appears.",
+    ("sesame", "Powdery mildew"): "Apply sulphur dust or wettable sulphur.",
+    ("canola", "Clubroot"): "Clean soil off machinery, leave at least two years between canola crops, grow clubroot-resistant varieties, control brassica weeds and volunteers, raise soil pH with lime on light infestations, and minimise soil movement.",
+}
+
+NAMED_DISEASES["tomato"].extend([
+    NamedDisease(
+        name="Early blight",
+        crop="tomato",
+        scientific_name="Alternaria solani",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Dark brown, leathery spots about 6-12 mm across with a concentric 'target' ring pattern, "
+            "starting on older, lower leaves; also on stems and on fruit near the calyx, where spots are "
+            "sunken and dry. Worst when it stays cool and humid for several days after rain."
+        ),
+        control=[
+            _rc("Rotate crops so infected debris can break down; destroy volunteer tomatoes, potatoes and "
+                "nightshades; start protective fungicide sprays when the first spots appear in favourable weather."),
+            _rc("Mancozeb 80% WP 20 g/10 L, Metalaxyl 8% + Mancozeb 64% WP 12.5 g/10 L, or Metiram 55% + "
+                "Pyraclostrobin 5% WG 8 ml/10 L at the first sign of disease.", _LK),
+            _rc("Chlorothalonil (e.g. Bravo Weather Stik) 1.5-2 pt/acre, mancozeb 1.5-2 lb/acre, fixed copper, "
+                "or Bacillus subtilis (Serenade Max, organic) 1-3 lb/acre.", _US_CA),
+        ],
+    ),
+    NamedDisease(
+        name="Late blight",
+        crop="tomato",
+        scientific_name="Phytophthora infestans",
+        symptom_category="drying_blight",
+        symptoms=(
+            "Water-soaked grey-green spots on older leaves that quickly become purple-brown, oily-looking "
+            "blotches, with white fungal growth on the leaf underside. Spreads fast to stems; whole leaves die. "
+            "Infected fruit turns brown but stays firm."
+        ),
+        control=[
+            _rc("Remove volunteer tomatoes, potatoes and nightshades; plant only blight-free transplants; avoid "
+                "sprinkler irrigation; plough in or destroy crop debris after harvest; grow resistant varieties "
+                "where blight is regular; apply protectant fungicide before an outbreak with thorough coverage."),
+            _rc("Mancozeb 80% WP 20 g/10 L, Metalaxyl 8% + Mancozeb 64% WP 12.5 g/10 L, or Metiram 55% + "
+                "Pyraclostrobin 5% WG 8 ml/10 L.", _LK),
+            _rc("Actives listed: famoxadone + cymoxanil, dimethomorph, azoxystrobin, azoxystrobin + "
+                "difenoconazole, chlorothalonil, mancozeb, pyraclostrobin -- repeat at regular intervals once "
+                "disease is present.", _US_CA),
+        ],
+        weather_trigger=WeatherTrigger(
+            min_humidity_pct=90,
+            min_temp_c=15,
+            max_temp_c=26,
+            description="humidity above 90% at about 15-26C; infection can happen in about 10 hours",
+        ),
+    ),
+    NamedDisease(
+        name="Septoria leaf spot",
+        crop="tomato",
+        scientific_name="Septoria lycopersici",
+        symptom_category="leaf_spot",
+        symptoms="Water-soaked spots on leaves that become circular with brown to grey centres.",
+        control=[
+            _rc("Remove infected lower leaves, avoid wetting foliage, and rotate away from tomato."),
+            _rc("Daconil (chlorothalonil) 15-30 ml/10 L, Mancozeb 20 ml/10 L, Topsin 6 g/10 L, or "
+                "Carbendazim 7 g/10 L.", _LK),
+        ],
+    ),
+    NamedDisease(
+        name="Powdery mildew",
+        crop="tomato",
+        scientific_name="Oidium lycopersicum",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Light green to bright yellow patches on the upper leaf surface with white powdery growth "
+            "underneath; heavy infection causes leaf drop."
+        ),
+        control=[
+            _rc("Keep plants well spaced for airflow and remove badly infected leaves."),
+            _rc("Sulfur 80% WG 50 g/10 L, Chlorothalonil 500 g/L SC 30 ml/10 L, or Carbendazim 50% WP "
+                "7 g/10 L.", _LK),
+        ],
+    ),
+    NamedDisease(
+        name="Bacterial wilt",
+        crop="tomato",
+        scientific_name="Ralstonia solanacearum",
+        symptom_category="wilt",
+        symptoms=(
+            "The whole plant wilts permanently even though the soil is moist. A cut stem placed in water "
+            "releases a milky, viscous bacterial ooze."
+        ),
+        control=[
+            _rc("No chemical cure. Use wilt-resistant varieties, rotate with legumes and cereals, remove and "
+                "destroy wilted plants, and keep the field and tools clean."),
+        ],
+    ),
+    NamedDisease(
+        name="Tomato yellow leaf curl virus",
+        crop="tomato",
+        scientific_name="Tomato yellow leaf curl virus (whitefly-transmitted begomovirus)",
+        symptom_category="distortion",
+        symptoms=(
+            "Leaves curl upward with yellow margins and are smaller than normal; plants are stunted and drop "
+            "flowers. Plants infected early may set no fruit. Spread by whiteflies, so affected plants appear "
+            "scattered through the field."
+        ),
+        control=[
+            _rc("No cure once infected. Use disease-free seedlings, keep the field weed-free, control whitefly "
+                "with recommended insecticides, and remove old crop debris."),
+        ],
+    ),
+])
+
+NAMED_DISEASES["potato"].extend([
+    NamedDisease(
+        name="Late blight",
+        crop="potato",
+        scientific_name="Phytophthora infestans",
+        symptom_category="drying_blight",
+        symptoms=(
+            "Irregular dark leaf spots with a lighter green halo that enlarge quickly, with whitish mould "
+            "underneath in moist weather. Tubers show a brown-purplish surface patch and a reddish-brown "
+            "granular rot inside, often followed by bacterial soft rot."
+        ),
+        control=[
+            _rc("Grow more blight-resistant varieties; remove primary inoculum (volunteer potatoes, outgrade "
+                "piles, infected seed); use a blight forecast to time protectant fungicides; protect tubers "
+                "from blight to avoid storage losses and infected seed next season."),
+            _rc("Use the Hutton Criteria warnings (BlightWatch / AHDB Fight Against Blight) to time sprays, check "
+                "variety ratings in the AHDB Potato Variety Database, and follow FRAG-UK fungicide resistance "
+                "guidance.", _GB),
+        ],
+        weather_trigger=WeatherTrigger(
+            min_humidity_pct=90,
+            min_temp_c=10,
+            description="the UK Hutton Criteria: two days in a row with a minimum of 10C and at least six hours of 90% humidity",
+        ),
+    ),
+    NamedDisease(
+        name="Early blight",
+        crop="potato",
+        scientific_name="Alternaria solani",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Dark brown lesions 3-4 mm across with concentric rings (a 'target board' look); badly infected "
+            "leaves yellow and drop. Tubers get a brown, corky dry rot. Favoured by warm weather with dew, rain "
+            "or sprinkler irrigation."
+        ),
+        control=[
+            _rc("Keep plants vigorous with good fertiliser, irrigation and pest control; grow later-maturing "
+                "varieties; monitor regularly."),
+            _rc("Start fungicide as soon as symptoms appear and repeat every 7-10 days, rotating mode-of-action "
+                "groups to avoid resistance.", _US_CA),
+        ],
+    ),
+])
+
+NAMED_DISEASES["apple"].append(
+    NamedDisease(
+        name="Apple scab",
+        crop="apple",
+        scientific_name="Venturia inaequalis",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Velvety olive-green to black spots on leaves and fruit. Fruit spots become brown-black and scabby, "
+            "and can distort and crack the fruit; infected leaves often drop early. The fungus overwinters on "
+            "fallen leaves and spreads by rain-splashed spores from spring."
+        ),
+        control=[
+            _rc("Rake up and destroy fallen leaves, prune out infected twigs, keep the canopy open so leaves dry "
+                "quickly, and plant scab-resistant varieties."),
+            _rc("RHS advises against fungicides for garden fruit; resistant apples include 'Discovery', "
+                "'Grenadier' and 'Winston' (pears: 'Beurre Hardy', 'Gorham').", _GB),
+            _rc("Start protective sprays at green tip. Infection needs about 20 hours of leaf wetness at 7C or 13 "
+                "hours at 26C. Actives include captan, mancozeb, myclobutanil, difenoconazole + cyprodinil, "
+                "pyraclostrobin + boscalid; lime sulfur, sulfur or fixed copper for organic growers.", _US_CA),
+        ],
+    )
+)
+
+NAMED_DISEASES["brinjal"].extend([
+    NamedDisease(
+        name="Phomopsis blight",
+        crop="brinjal",
+        scientific_name="Phomopsis vexans",
+        symptom_category="drying_blight",
+        symptoms=(
+            "Grey spots with black margins on stems and leaf stalks; soft, watery spots on fruit that turn "
+            "black and mummified."
+        ),
+        control=[
+            _rc("Remove and destroy infected fruit and plant parts."),
+            _rc("Chlorothalonil 500 g/L SC 30 ml/10 L, Carbendazim 50% WP 7 g/10 L, or Thiophanate-methyl 70% WP "
+                "6 g/10 L.", _LK),
+        ],
+    ),
+    NamedDisease(
+        name="Bacterial wilt",
+        crop="brinjal",
+        scientific_name="Ralstonia solanacearum",
+        symptom_category="wilt",
+        symptoms=(
+            "Branches wilt, then the whole plant; stem tissue inside is discoloured and a cut stem oozes "
+            "slimy bacteria."
+        ),
+        control=[
+            _rc("No chemical control. Remove affected plants with their soil, destroy crop debris after harvest, "
+                "rotate with cabbage-family crops or okra, grow resistant varieties, and disinfect tools with "
+                "bleach."),
+        ],
+    ),
+    NamedDisease(
+        name="Anthracnose",
+        crop="brinjal",
+        scientific_name="Colletotrichum gloeosporioides",
+        symptom_category="leaf_spot",
+        symptoms="Sunken circular fruit lesions with tan to orange to black rings and pink spore masses.",
+        control=[
+            _rc("Use healthy seed, avoid heavy overhead irrigation, and remove infected fruit."),
+            _rc("Seed treatment with Thiram 80% 5 g/kg or Captan 50% 6 g/kg; from flowering spray Fluazinam "
+                "500 g/L SC 10 ml/10 L, Metiram + Pyraclostrobin 20 g/10 L, or Chlorothalonil 500 SC "
+                "30 ml/10 L.", _LK),
+        ],
+    ),
+])
+
+NAMED_DISEASES["canola"] = [
+    NamedDisease(
+        name="Blackleg",
+        crop="canola",
+        scientific_name="Leptosphaeria maculans",
+        symptom_category="drying_blight",
+        symptoms=(
+            "Dirty-white round leaf spots dotted with tiny black specks; grey-white stem lesions with a dark "
+            "border and blackened, pinched stem bases. Infected pods shatter early at harvest."
+        ),
+        control=[
+            _rc("Leave at least two (ideally three to four) years between canola crops, grow varieties rated at "
+                "least moderately resistant and rotate resistance genes, use certified seed, and control "
+                "brassica weeds and volunteers. Fungicides only protect, so apply before symptoms."),
+            _rc("Scout at the 3-6 leaf stage (50 plants) and treat if more than 10% have leaf lesions; keep "
+                "fields 50-100 m from last year's canola; assess basal cankers on 50 plants at swathing.", _CA),
+            _rc("Sow at least 500 m from last season's canola stubble; no more than two Group 7 (SDHI) "
+                "applications per season, no more than two consecutive Group 3, and at most one Group 11.", _AU),
+        ],
+        weather_trigger=WeatherTrigger(
+            min_humidity_pct=80,
+            min_recent_rainfall_mm=2,
+            min_temp_c=13,
+            max_temp_c=18,
+            description="spore release peaks after rain over 2 mm, at 13-18C with humidity above 80%",
+        ),
+    ),
+    NamedDisease(
+        name="Clubroot",
+        crop="canola",
+        scientific_name="Plasmodiophora brassicae",
+        symptom_category="galls",
+        symptoms=(
+            "Swollen, spongy galls on the roots; above ground the plants wilt, stunt, yellow and ripen early "
+            "with shrivelled seed. Worse in warm (20-24C), wet, acidic soil (pH below 6.5). Spores survive in "
+            "soil for 15-20 years."
+        ),
+        control=[
+            _rc("Clean soil off machinery and disinfect with 2% bleach for 20 minutes; at least two years between "
+                "canola crops; grow clubroot-resistant varieties and rotate resistance; control brassica weeds "
+                "within three weeks of emergence; lime towards pH 7 on light infestations; keep infested patches "
+                "separate and minimise tillage.", _CA),
+        ],
+    ),
+    NamedDisease(
+        name="Sclerotinia stem rot",
+        crop="canola",
+        scientific_name="Sclerotinia sclerotiorum",
+        symptom_category="wilt",
+        symptoms=(
+            "Soft, watery or light-brown lesions on leaves and stems; stems later bleach white, shred easily, "
+            "and show white mould with black sclerotia inside. Favoured by humid 20-25C weather and dense "
+            "canopies."
+        ),
+        control=[
+            _rc("Avoid excessive seeding rates and don't swath immature crops before forecast rain."),
+            _rc("Spray at 20-50% bloom (about 30% is optimal), using a risk assessment tool; fungicide pays when "
+                "incidence is expected to reach about 15%.", _CA),
+            _rc("Spray during flowering before an infection period; if a second spray at 50% flowering follows "
+                "one at 20%, use a different fungicide group.", _AU),
+        ],
+    ),
+]
+
+NAMED_DISEASES["avocado"] = [
+    NamedDisease(
+        name="Phytophthora root rot",
+        crop="avocado",
+        scientific_name="Phytophthora cinnamomi",
+        symptom_category="wilt",
+        symptoms=(
+            "Small, pale or yellowish leaves that wilt with brown tips, sparse canopy, little new growth and "
+            "branch dieback; feeder roots are black, brittle and dead. Driven by wet, poorly drained soil."
+        ),
+        control=[
+            _rc("Correct irrigation is the single most important practice -- never water soil that is already "
+                "wet. Mulch 10-15 cm of coarse wood chips under the canopy (kept off the trunk), add gypsum, "
+                "plant certified nursery stock on tolerant rootstocks, and keep equipment out of infested groves "
+                "when soil is wet."),
+            _rc("Tolerant rootstocks: Dusa, Latas, Uzi, Zentmyer. Phosphonates (phosphorous acid; Aliette 5 lb/acre "
+                "every 60 days, max 20 lb/acre/yr) applied as new root growth starts, trunk injection being most "
+                "effective; mefenoxam for young replants.", _US_CA),
+        ],
+    ),
+    NamedDisease(
+        name="Anthracnose",
+        crop="avocado",
+        scientific_name="Colletotrichum gloeosporioides",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Brown-black spots under 5 mm around fruit pores that grow, blacken and sink after harvest, rotting "
+            "into the flesh; yellow-then-brown leaf spots and shoot dieback. Speeds up above 24C in rainy or "
+            "foggy weather."
+        ),
+        control=[
+            _rc("Prune out dead wood, lift low limbs at least 60 cm off the ground, prune and harvest only in dry "
+                "weather, and cool fruit to 5C within 6 hours of picking."),
+            _rc("Copper hydroxide from the start of the season every 60 days (max 20 lb/acre/yr), or azoxystrobin "
+                "on a 10-14 day schedule.", _US_CA),
+        ],
+    ),
+]
+
+NAMED_DISEASES["olive"] = [
+    NamedDisease(
+        name="Peacock spot",
+        crop="olive",
+        scientific_name="Spilocaea oleaginea",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Sooty blotches on leaves that become black circular spots 2.5-12 mm across, sometimes with a yellow "
+            "halo; leaves drop early and twigs can die back. Needs about 48 hours of leaf wetness, optimum 14-24C, "
+            "mostly with autumn and winter rain."
+        ),
+        control=[
+            _rc("Apply a preventive copper spray (Bordeaux mixture, fixed copper or copper sulfate) before the "
+                "autumn rains, and again in spring if wet weather continues."),
+        ],
+    ),
+    NamedDisease(
+        name="Olive knot",
+        crop="olive",
+        scientific_name="Pseudomonas savastanoi",
+        symptom_category="galls",
+        symptoms=(
+            "Rough galls 1-5 cm across on twigs, branches, trunk, leaves or fruit stalks. Bacteria enter through "
+            "leaf scars, pruning cuts and frost cracks during wet weather."
+        ),
+        control=[
+            _rc("Prune out knots in the dry season and sanitise tools frequently; spray copper after harvest in "
+                "autumn and again in spring -- at least twice a year where the disease is common."),
+        ],
+    ),
+]
+
+NAMED_DISEASES["blueberry"] = [
+    NamedDisease(
+        name="Mummy berry",
+        crop="blueberry",
+        scientific_name="Monilinia vaccinii-corymbosi",
+        symptom_category="drying_blight",
+        symptoms=(
+            "New shoots and leaves wilt and brown along the midrib with ash-grey spores; later, berries turn "
+            "salmon-pink, soft, then shrivel into hard 'mummies' that drop and overwinter. Favoured by cool, wet "
+            "spring weather."
+        ),
+        control=[
+            _rc("Rake or blow mummies into the rows, mulch 8-10 cm deep under bushes to bury them, and spray at "
+                "leaf emergence and again at bloom, rotating fungicide actives."),
+            _rc("Resistant cultivars include rabbiteye Premier, Columbus and Powderblue; southern highbush Legacy, "
+                "O'Neal and Star; northern highbush Duke and Elliot.", _US_NC),
+        ],
+    ),
+]
+
+NAMED_DISEASES["sugar beet"] = [
+    NamedDisease(
+        name="Cercospora leaf spot",
+        crop="sugar beet",
+        scientific_name="Cercospora beticola",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Round spots about 3 mm across with ash-grey centres and dark brown or reddish-purple borders; in "
+            "humid weather the centres turn grey and velvety. Favoured by days of 27-32C with nights above 16C."
+        ),
+        control=[
+            _rc("Bury infected tops by tillage, rotate at least three years, plant far from last year's infected "
+                "field, and grow tolerant varieties."),
+            _rc("Spray after rows close at disease onset, in high water volume (15-20 gal/acre), using mixtures "
+                "with a multisite fungicide in rotation; tolerant 'CR+' varieties.", _US_ND),
+        ],
+    ),
+]
+
+NAMED_DISEASES["cassava"] = [
+    NamedDisease(
+        name="Cassava mosaic virus",
+        crop="cassava",
+        scientific_name="Sri Lankan cassava mosaic virus (whitefly-transmitted begomovirus)",
+        symptom_category="mosaic",
+        symptoms=(
+            "Yellow-green mottled patches on leaves that curl and shrink into irregular shapes; plants are "
+            "stunted and weak and yield falls. Spread by infected cuttings and whiteflies."
+        ),
+        control=[
+            _rc("No cure. Plant only healthy cuttings, remove and destroy diseased plants, keep fields weed-free, "
+                "and remove wild host plants; mark infected plants so their stems aren't used for planting."),
+        ],
+    ),
+    NamedDisease(
+        name="Brown leaf spot",
+        crop="cassava",
+        scientific_name="Mycosphaerella spp.",
+        symptom_category="leaf_spot",
+        symptoms=(
+            "Brown spots on older, lower leaves first, spreading upward when severe; leaves yellow and drop. "
+            "Spreads in high humidity."
+        ),
+        control=[
+            _rc("Remove and burn infected leaves in home gardens."),
+            _rc("Commercial fields: Mancozeb 80% WP 32 g per 16 L tank.", _LK),
+        ],
+    ),
+    NamedDisease(
+        name="Collar and root rot",
+        crop="cassava",
+        scientific_name="Sclerotium spp.",
+        symptom_category="wilt",
+        symptoms="Roots and stem base rot, leaves yellow and plants dry out and die, with white fungal threads at the stem base.",
+        control=[
+            _rc("Improve drainage to prevent waterlogging and remove diseased plants with their surrounding soil."),
+        ],
+    ),
+]
+
+NAMED_DISEASES["pineapple"] = [
+    NamedDisease(
+        name="Phytophthora crown and root rot",
+        crop="pineapple",
+        scientific_name="Phytophthora spp.",
+        symptom_category="wilt",
+        symptoms=(
+            "Leaves change from green through red and yellow shades and the young leaves pull out easily; roots "
+            "are dead, so plants lift out of the soil easily. Affects plants of any age."
+        ),
+        control=[
+            _rc("Plant disease-free suckers with a pre-planting treatment, use well-drained soil, don't plant "
+                "suckers too deep, and apply fungicide where symptoms appear."),
+        ],
+    ),
+    NamedDisease(
+        name="Fruit rot",
+        crop="pineapple",
+        scientific_name="fungal (species not specified)",
+        symptom_category="drying_blight",
+        symptoms="Rot starts at the fruit stalk and spreads into the fruit, entering through cut or damaged tissue.",
+        control=[
+            _rc("Avoid damaging fruit at harvest."),
+            _rc("Sanitise storage with 2% formalin and dip cut stalks in 5% sodium bicarbonate after harvest.", _LK),
+        ],
+    ),
+    NamedDisease(
+        name="Pineapple wilt",
+        crop="pineapple",
+        scientific_name="Pineapple mealybug wilt-associated virus (mealybug-transmitted)",
+        symptom_category="wilt",
+        symptoms=(
+            "Leaves redden then turn pink, lose stiffness, curl down at the edges and die back from the tips; "
+            "plants look wilted and fruit is small. Spread by mealybugs, which ants move between plants."
+        ),
+        control=[
+            _rc("Plant healthy suckers with a pre-planting treatment, control mealybugs (and the ants that spread "
+                "them) with recommended insecticides, and remove affected plants."),
+        ],
+    ),
+]
+
+for (_crop, _name), _text in _GENERAL_PRACTICE.items():
+    _disease = next(d for d in NAMED_DISEASES[_crop] if d.name == _name)
+    _disease.control.insert(0, RegionalControl(_text))
+
+
+# ---------------------------------------------------------------------------
+# Ninth extraction pass (2026-09-26): each region's signature disease, so
+# farmers (and judges) in Europe, Brazil, East Africa and Australia hear
+# advice from their own authorities. Sources: plant_pathology_reference.md
+# Sources 34-38.
+# ---------------------------------------------------------------------------
+
+_IE = (["IE"], "Ireland (Teagasc)")
+_EU_XF = (["IT", "ES", "FR", "PT"], "European Union (EFSA)")
+_BR = (["BR"], "Brazil (Embrapa)")
+_EAST_AFRICA = (["KE", "UG", "TZ", "ET", "RW"], "Eastern Africa (CIMMYT / KALRO)")
+_AU_QLD = (["AU"], "Australia (Queensland Government)")
+
+
+def _named(crop: str, name: str) -> NamedDisease:
+    return next(d for d in NAMED_DISEASES[crop] if d.name == name)
+
+
+_named("potato", "Late blight").control.append(_rc(
+    "Block spraying one product is over: tank-mix two blight chemistries and change mode of action between "
+    "sprays. The EU_43_A1 strain, found in Ireland in 2023, resists CAA and OSBPI fungicide groups.", _IE))
+
+_named("soybean", "Soybean Rust (SBR)").control.append(_rc(
+    "Respect the vazio sanitario (soybean-free period): no soybean in the off-season and remove volunteer "
+    "plants. Sow early-cycle cultivars early in the recommended window to escape the disease, and use only "
+    "commercial fungicide mixtures with different modes of action. Rust can cut yield by up to 90%.", _BR))
+
+_named("banana", "Panama Wilt").control.append(_rc(
+    "Tropical race 4 is present in Far North Queensland and can't be eradicated from soil. Zone the farm, "
+    "keep a clean access road, clean and disinfect vehicles and machinery on entry and exit, use footwear "
+    "exchange and footbaths, and control movement of soil, water and plant material. Signs: leaf margins "
+    "yellow, older leaves wilt, and the pseudostem shows dark purple-red streaks inside.", _AU_QLD))
+
+NAMED_DISEASES["olive"].append(
+    NamedDisease(
+        name="Olive quick decline (Xylella fastidiosa)",
+        crop="olive",
+        scientific_name="Xylella fastidiosa",
+        symptom_category="drying_blight",
+        symptoms=(
+            "Leaf scorch and browning with twigs and branches drying out, usually starting at the top of the "
+            "canopy and spreading through the crown until the tree stops cropping and dies. Spread by xylem-"
+            "feeding insects, mainly the meadow spittlebug (Philaenus spumarius)."
+        ),
+        control=[
+            _rc("No cure. Use certified pathogen-free planting material, control spittlebug vectors and grassy "
+                "ground cover where they breed, report suspected cases to the plant health authority, and in "
+                "affected areas plant tolerant varieties such as Leccino or FS-17."),
+            _rc("A quarantine pest in the EU (present in Italy, France, Spain and Portugal): movement of host "
+                "plants is restricted, demarcated zones are set around outbreaks, and infected trees must be "
+                "removed.", _EU_XF),
+        ],
+    )
+)
+
+NAMED_DISEASES["maize"].append(
+    NamedDisease(
+        name="Maize lethal necrosis",
+        crop="maize",
+        scientific_name="Maize chlorotic mottle virus + sugarcane mosaic virus (or another potyvirus)",
+        symptom_category="mosaic",
+        symptoms=(
+            "Fine yellow specks and mottling on young leaves that join into yellow stripes, then whole leaves "
+            "die from the edges inward; young leaves in the whorl die ('dead heart'); plants are stunted and "
+            "ears are small, malformed, poorly filled and dry out. Worst when plants are infected young. "
+            "Spread by thrips and beetles, and at a low rate through seed."
+        ),
+        control=[
+            _rc("Plant certified MLN-free seed of tolerant hybrids, keep fields free of alternative grass hosts, "
+                "use clean tools, scout regularly and pull out infected plants promptly, control insect "
+                "vectors, and rotate maize with non-cereals, especially grain legumes."),
+            _rc("Keep a maize-free period of at least two months to break the virus cycle; MLN-tolerant hybrids "
+                "have been released in Kenya, Uganda and Tanzania. First reported in Kenya in 2011, it caused "
+                "yield losses up to 90% there in 2012.", _EAST_AFRICA),
+        ],
+    )
+)
+
+
 # crop_data.py (growing-condition profiles) and NAMED_DISEASES (disease
 # entries) were built in two separate passes and independently chose
 # different but individually reasonable names for a few multi-host groups:
@@ -4040,7 +4690,27 @@ _CROP_ALIASES: dict[str, str] = {
     "mung": "blackgram",
     "mung bean": "blackgram",
     "urad": "blackgram",
+    "oilseed rape": "canola",
+    "rapeseed": "canola",
+    "eggplant": "brinjal",
+    "aubergine": "brinjal",
+    "tapioca": "cassava",
+    "manioc": "cassava",
+    "sugarbeet": "sugar beet",
 }
+
+
+def detect_crop(text: str) -> str | None:
+    """The crop a farmer named in their own words ("my tomatoes are
+    wilting", "aubergine leaves have spots"), as a NAMED_DISEASES key or
+    alias, or None. Whole-word match with plurals, longest names first so
+    "sugar beet" wins over "beet" and "pigeon pea" over "pea"."""
+    lowered = text.lower()
+    names = sorted(set(NAMED_DISEASES) | set(_CROP_ALIASES), key=len, reverse=True)
+    for name in names:
+        if re.search(r"\b" + re.escape(name) + r"(?:s|es)?\b", lowered):
+            return name
+    return None
 
 
 def get_named_diseases(crop: str) -> list[NamedDisease]:

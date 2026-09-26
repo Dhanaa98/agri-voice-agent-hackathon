@@ -4,6 +4,53 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Adaptive plant doctor + ninth knowledge pass (2026-09-26).** User asked
+  for up to 4-5 diagnostic questions, stopping early once the disease is
+  clear, and for data beyond the five countries of the eighth pass.
+  *Doctor:* each turn the LLM scores this crop's knowledge-base diseases
+  (plus "not a disease" and "something not listed") from the farmer's
+  evidence and proposes the single most discriminating next question; a
+  deterministic rule decides when to stop (top >= 70% and >= 25 points
+  ahead, after at least one answer -- or >= 90% straight from the opening;
+  hard cap 5 questions). Vague openings now get "what exactly do you see?"
+  and a missing crop gets "which crop?" instead of giving up. When answers
+  stay split it says so and gives advice covering both. No-LLM fallback is
+  the old fixed two-question flow. Simulated farmers (LLM role-playing a
+  known disease): late blight 1 question, clubroot 1, olive peacock spot 1,
+  fertiliser burn 1 ("not a disease"), potato early blight 2, very vague
+  potato late blight 2, sesame powdery mildew 0, unobservant farmer 5.
+  *Data:* every disease now has general advice (42 were country-only), and
+  region-tagged advice spans 17 countries (added IE, BR, EU, eastern Africa,
+  AU TR4) -- Sources 34-38. Also added one quick retry in llm_client for
+  Gemini 503s, seen mid-conversation during testing.
+- **Knowledge base eighth pass: international crops, diseases and
+  region-tagged mitigation (2026-09-26).** 45 -> 51 crops, 169 -> 196
+  named diseases, all from 15 newly logged sources
+  (plant_pathology_reference.md Sources 19-33: Sri Lanka DOA, UC IPM, AHDB,
+  RHS, Canola Council of Canada, CropLife Australia, NC State, NDSU). The
+  user redirected mid-task: hackathon judges are from the US/UK/AUS/Canada/
+  Europe, so don't focus on Sri Lanka only. Added: tomato early blight,
+  late blight, Septoria, powdery mildew, bacterial wilt, TYLCV (previously
+  missing entirely); potato late blight (UK Hutton Criteria trigger) and
+  early blight; apple scab; brinjal Phomopsis blight, bacterial wilt,
+  anthracnose; new canola, avocado, olive, blueberry, sugar beet, cassava,
+  pineapple sections plus CropProfiles for all but blueberry (no sourced
+  temperature band). Control advice is region-tagged (LK/US/GB/CA/AU) so a
+  Canadian farmer gets Canola Council rules and an Australian farmer gets
+  CropLife rules for the same blackleg entry. Weather triggers only where
+  sources gave figures. Aliases added (oilseed rape/rapeseed, aubergine/
+  eggplant, tapioca/manioc, sugarbeet).
+  **Two real bugs fixed along the way:** (1) the plant doctor never used
+  NAMED_DISEASES from voice or chat, because nothing passed a crop --
+  PlantAgent now detects the crop from the farmer's own words
+  (plant_data.detect_crop). (2) Named diseases were filtered strictly by
+  the keyword-matched symptom category, so "dark oily blotches with white
+  mould" (matched leaf_spot) hid late blight (filed as drying_blight) --
+  now ranked by symptom-word overlap with the category as a bonus
+  (plant.rank_named_diseases), and the final prompt passes on the listed
+  region's products/doses. Verified: Kandy farm -> late blight with Sri
+  Lanka fungicide doses; Saskatoon farm -> blackleg; all four test scripts
+  pass.
 - **Wakeword phrase changed again: "Hey Field" -> "Hey Green" for the
   merged Weather+Crop wakeword (2026-09-23).** User trained and added a
   new `.onnx` model (`Hey_green.onnx`, later copied over `field.onnx` so

@@ -528,6 +528,78 @@ CROPS: dict[str, CropProfile] = {
         },
         notes="Low tolerance for excess moisture, especially at flowering and seed-set; waterlogging is the main risk, not humidity alone.",
     ),
+    # --- Eighth pass (2026-09-26): internationally relevant additions.
+    # Cassava/pineapple temperatures are from Sri Lanka DOA pages and canola
+    # from the Canola Council of Canada (plant_pathology_reference.md Sources
+    # 19-33); avocado, olive and sugar beet bands came from extension/industry
+    # summaries in search results and are flagged there for re-verification.
+    # Humidity bands and weekly rainfall are derived from each source's
+    # moisture guidance (e.g. annual rainfall / 52), not stated directly.
+    "canola": CropProfile(
+        name="canola",
+        temp_range_c=(18, 25),
+        ideal_humidity_pct=(40, 70),
+        max_weekly_rainfall_mm=40,
+        disease_risks={
+            "high_humidity_high_rain": "blackleg spores peak after rain over 2 mm at 13-18C with humidity above 80%; sclerotinia stem rot favoured by humid 20-25C weather at flowering",
+            "high_humidity": "sclerotinia stem rot risk rises in humid weather and dense canopies during flowering",
+        },
+        notes="Cool-season crop (optimum about 20C, per the Canola Council of Canada); heat stress from about 29.5-30C during flowering causes blank pods.",
+    ),
+    "sugar beet": CropProfile(
+        name="sugar beet",
+        temp_range_c=(15, 24),
+        ideal_humidity_pct=(50, 80),
+        max_weekly_rainfall_mm=40,
+        disease_risks={
+            "high_humidity": "Cercospora leaf spot favoured by humid weather with days of 27-32C and nights above 16C",
+            "high_humidity_high_rain": "Cercospora leaf spot can cycle repeatedly in warm, humid, wet spells",
+        },
+        notes="Temperate crop; leaf growth best at 19-24C, taproot growth best near 18C.",
+    ),
+    "avocado": CropProfile(
+        name="avocado",
+        temp_range_c=(21, 29),
+        ideal_humidity_pct=(50, 80),
+        max_weekly_rainfall_mm=50,
+        disease_risks={
+            "high_humidity_high_rain": "Phytophthora root rot spreads in waterlogged, poorly drained soil; anthracnose speeds up in rainy or foggy weather above 24C",
+            "high_humidity": "anthracnose fruit rot more likely in extended humid or foggy weather",
+        },
+        notes="Not frost tolerant; stressed above about 32C. Needs very well-drained soil.",
+    ),
+    "olive": CropProfile(
+        name="olive",
+        temp_range_c=(10, 27),
+        ideal_humidity_pct=(30, 60),
+        max_weekly_rainfall_mm=20,
+        disease_risks={
+            "high_humidity_high_rain": "peacock spot needs about 48 hours of leaf wetness, mostly in autumn and winter rain; olive knot spreads through wounds in wet weather",
+            "high_humidity": "peacock spot pressure rises in damp coastal conditions",
+        },
+        notes="Mediterranean-climate tree needing winter chill; best with 400-700 mm of rain a year and dry summers.",
+    ),
+    "cassava": CropProfile(
+        name="cassava",
+        temp_range_c=(25, 29),
+        ideal_humidity_pct=(60, 90),
+        max_weekly_rainfall_mm=50,
+        disease_risks={
+            "high_humidity": "brown leaf spot spreads in high humidity",
+            "high_humidity_high_rain": "collar/root rot rises with waterlogged soil",
+        },
+        notes="Tropical root crop, grown up to 1500 m; suits 1000-1500 mm of rain a year (Sri Lanka Dept. of Agriculture).",
+    ),
+    "pineapple": CropProfile(
+        name="pineapple",
+        temp_range_c=(24, 32),
+        ideal_humidity_pct=(60, 90),
+        max_weekly_rainfall_mm=80,
+        disease_risks={
+            "high_humidity_high_rain": "Phytophthora crown and root rot in poorly drained, waterlogged soil",
+        },
+        notes="Tropical crop suiting 1500-3000 mm of rain a year and soil pH 5-6 (Sri Lanka Dept. of Agriculture).",
+    ),
 }
 
 CROP_NAMES = tuple(CROPS.keys())

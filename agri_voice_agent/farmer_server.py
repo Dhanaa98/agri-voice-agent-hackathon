@@ -130,7 +130,12 @@ def route_message(text: str, recent_turns: str = "") -> tuple[str | None, bool, 
     `is_fresh_exchange` is False only when continuing the currently-active
     multi-turn Plant conversation -- the farmer's answer to a follow-up
     question (e.g. "the whole plant, not just one branch") must never be
-    re-routed. Otherwise keywords decide, then the LLM classifier with the
+    re-routed. An unambiguous keyword match to a DIFFERENT domain (e.g.
+    "how is the weather" partway through a symptom Q&A) still redirects,
+    though -- abandoning the plant session -- since that's a genuine topic
+    change, not a follow-up answer; only a message with no clear keyword
+    match (which is what a real follow-up answer looks like) stays locked
+    to plant. Otherwise keywords decide, then the LLM classifier with the
     recent turns as context. There is deliberately no fallback to the
     previously active domain: that used to answer garbled or echoed
     transcripts ("How can I help you today.") with a weather report.
@@ -142,7 +147,12 @@ def route_message(text: str, recent_turns: str = "") -> tuple[str | None, bool, 
 
     mid_plant_conversation = _current_domain == "plant" and not _domain_conversation_done("plant")
     if mid_plant_conversation:
-        return "plant", False, False
+        redirect = detect_domain(text)
+        if redirect is None or redirect == "plant":
+            return "plant", False, False
+        _agents["plant"].abandon()
+        _current_domain = redirect
+        return redirect, True, True
 
     detected = detect_domain(text) or classify_with_llm(text, recent_turns)
     if detected is None:

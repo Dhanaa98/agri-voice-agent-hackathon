@@ -708,6 +708,15 @@ class PlantAgent:
 
         return response
 
+    def abandon(self, session_id: str = "default") -> None:
+        """Drop an in-progress diagnostic session without finishing it --
+        called when the farmer's own words clearly redirect to a different
+        domain mid-conversation (e.g. "how is the weather" partway through
+        a symptom Q&A). Without this, the next "Hey Doc" call would see
+        session.done still False and silently resume the abandoned
+        conversation instead of starting a fresh one."""
+        self._active_sessions.pop(session_id, None)
+
     def is_done(self, session_id: str = "default") -> bool:
         """True if the named conversation has reached a final diagnosis
         (or has no active turns yet), i.e. it's safe to stop streaming ASR

@@ -239,6 +239,26 @@ Running log of build progress for this project at
   suitable for my farm" (unchanged prompt path) -> still correctly gives a
   suitability verdict. Mic gain/noise-suppression change is browser-side
   and needs live-device re-testing after deploy (can't be curl-tested).
+- **Documentation pass: ARCHITECTURE.md + USER_GUIDE.md (2026-09-27).** User
+  asked for everything documented, plus a user guide covering delays/
+  latency to expect. `README.md` had drifted significantly out of date
+  (still said "not yet deployed", described push-to-talk as needing
+  AssemblyAI, no mention of per-farmer identity or the context
+  interpreter) -- rather than rewrite it wholesale, added a pointer at the
+  top to the two new docs and left it as the historical build-plan record.
+  `docs/ARCHITECTURE.md` (new): current, accurate technical description --
+  the _answer() request flow in order, the domain/interpreter split and
+  why farm commands stay regex-only, per-farmer data isolation, the two
+  separate voice-input paths (push-to-talk vs wakeword) and which one
+  still needs live verification, and a latency-budget section with
+  concrete numbers pulled from the actual code (Gemini ~2-3s typical +
+  20s hard timeout, AssemblyAI handshake ~4.6-4.8s observed, OpenWeather
+  10s timeout, ip-api.com 5s timeout). `docs/USER_GUIDE.md` (new):
+  farmer-facing, plain language -- what it can/won't do, a delays table
+  (keyword match vs. interpreter-routed vs. first wakeword question vs.
+  plant diagnosis), browser support caveats (no push-to-talk in Firefox),
+  multi-farm behavior, explicitly documents the no-barge-in limitation
+  discussed earlier in this session.
 - **crops_grown was never actually written (2026-09-27).** User asked: "is
   this tracking the plants I have in the farm". Real gap: `FarmProfile.
   crops_grown` existed, was read by `to_prompt_context()` (so it WOULD

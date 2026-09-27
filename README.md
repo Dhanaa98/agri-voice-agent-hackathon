@@ -3,6 +3,14 @@
 Multi-wakeword voice agent for farmers, built for the AssemblyAI Voice Agent
 Hackathon (lablab.ai). Full design in [AGRI_VOICE_AGENT_BRIEF.md](AGRI_VOICE_AGENT_BRIEF.md).
 
+**For how the app actually works today** (per-farmer accounts, the context
+interpreter, current voice input paths, latency expectations), see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+[docs/USER_GUIDE.md](docs/USER_GUIDE.md) — sections of this README below
+(deployment status, push-to-talk needing AssemblyAI) describe the original
+build plan and are out of date. [docs/build_log.md](docs/build_log.md) has
+the full chronological history of every fix.
+
 Two wakewords route to three domain agents that share one `FarmState` object:
 
 - **"Hey Green"** — covers both Weather (live conditions + forecast, OpenWeatherMap

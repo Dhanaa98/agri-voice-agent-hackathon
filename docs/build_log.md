@@ -142,6 +142,63 @@ Running log of build progress for this project at
   place name now correctly returns crop suitability for that location
   instead of "didn't catch that"; weather's existing location flow
   re-tested and still unaffected by the generalization.
+- **Mic audio aliasing degrading live-speech transcription (2026-09-27).**
+  User reported: TTS-generated audio transcribed accurately, but the
+  user's own live speech didn't. `floatTo16kPcm()` in farmer.html
+  downsampled the mic's native-rate audio to 16kHz by picking every Nth
+  raw sample (nearest-neighbor decimation) with NO anti-aliasing filter
+  first. Browsers frequently don't actually honor the requested 16000Hz
+  `AudioContext` sample rate (common on mobile -- see getAudioContext()'s
+  own comment), so that naive decimation folded high-frequency content
+  into the speech band as noise -- exactly the kind of distortion a
+  clean, already-correctly-sampled TTS file would never have. Added a
+  single-pole low-pass filter (state persisted across ScriptProcessor
+  chunks via `lpfState`, reset at the start of each new captureMicPcm()
+  call) run over the full native-rate signal before decimating, and
+  switched to linear interpolation instead of nearest-neighbor sampling
+  for a further small accuracy gain. Also added `autoGainControl: true`
+  to the mic constraints to help quiet/distant speech reach a usable
+  level.
+- **Bare-question fallback for genuine farming questions outside weather/
+  crop/plant, plus a keyword false-match bug (2026-09-27).** User asked:
+  answers should be "more intelligent, not just pre-prepared questions and
+  answers" -- e.g. a general farming question with no keyword match had
+  nowhere to go but the generic "sorry, I didn't catch that".
+  1. Added `domains/general.py` (`GeneralAgent`): unlike the other three
+     domains, there's no deterministic dataset behind it -- the LLM IS the
+     answer, not just the phrasing layer, which is a deliberate one-off
+     exception to this project's "deterministic logic, LLM only phrases"
+     rule, since an open-ended question has nothing deterministic to
+     phrase from. Falls back to a fixed "I can't look that up right now"
+     when no Gemini key is configured, same pattern as every other agent.
+  2. `classify_with_llm()` (intent.py) now accepts a fifth label,
+     "general", alongside weather/crop/plant/unclear -- reached only when
+     no keyword matches (detect_domain()) and the LLM classifier decides
+     it's a genuine farming question that isn't specifically weather/crop/
+     plant. A truly non-farming message (e.g. "who won the last world
+     cup") still correctly returns "unclear". Wired into farmer_server.py:
+     added "general" to DOMAIN_AGENTS, and a `domain == "general"` branch
+     at each of the three `agent.handle(...)` call sites (main dispatch,
+     the pending-farm-question resume, matching general's own
+     `handle(farm, question=...)` signature).
+  Structural/destructive commands (add/delete/rename/relocate a farm)
+  deliberately stay 100% regex -- a wrong LLM guess there could delete the
+  wrong farm with no undo; a wrong domain guess for an open-ended question
+  just means a slightly generic answer, which is why only THIS path was
+  opened up to the LLM.
+  **Real bug caught while verifying (unrelated to the feature, but was
+  actively blocking it):** `detect_domain()` used plain substring
+  matching (`keyword in lowered`), so the single-word keyword "rot" (for
+  plant disease) matched inside "rotation" -- "what is crop rotation"
+  routed to Plant instead of Crop, and more importantly meant any message
+  containing a keyword substring could never reach the new `general` path
+  at all. Fixed with word-boundary regex matching; multi-word keywords are
+  unaffected since a space already acted as an implicit boundary.
+  Verified end-to-end: "how do I improve my soil" (no keyword) -> general,
+  answered from the farm's own location; "who won the last world cup" ->
+  correctly "unclear", generic clarify text; "what is crop rotation" now
+  correctly -> crop, not plant; weather and crop routing re-tested
+  unaffected by both changes.
 - **Mic-permission delay on mobile (2026-09-27).** Reported live: slow/
   seemingly-broken mic permission prompt on mobile. Root cause:
   startWakewordListening() loaded the entire wakeword pipeline (WASM

@@ -85,35 +85,55 @@ def detect_domain(text: str) -> str | None:
     lowered = text.lower()
     for domain, keywords in _DOMAIN_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in lowered:
+            # REAL BUG FOUND AND FIXED (2026-09-27, reported live: "what is
+            # crop rotation" got routed to plant): plain substring matching
+            # ("rot" in "rotation") false-matched single-word keywords
+            # inside unrelated longer words. Word-boundary matching fixes
+            # this for both single- and multi-word keywords (a space in a
+            # multi-word phrase already acted as an implicit boundary, so
+            # this doesn't change those).
+            if re.search(r"\b" + re.escape(keyword) + r"\b", lowered):
                 return domain
     return None
 
 
 def classify_with_llm(text: str, recent_turns: str = "") -> str | None:
     """Fallback for messages no keyword matched. Returns "weather", "crop",
-    "plant", or None when the message is unclear (cut off, not a farming
-    question, the assistant's own words echoed back) or no model is
-    available -- the caller should then ask the farmer to repeat."""
+    "plant", "general", or None when the message is truly unclear (cut off,
+    garbled, the assistant's own words echoed back) or no model is
+    available -- the caller should then ask the farmer to repeat.
+
+    "general" (added 2026-09-27, in response to a live report: a farming
+    question outside all three specialists -- "how often should I water
+    tomatoes", "what's crop rotation" -- used to have nowhere to land here
+    but "unclear", so it fell straight to the generic "sorry, I didn't
+    catch that" instead of actually being answerable. Routes to
+    domains/general.py's GeneralAgent -- the one deliberate exception to
+    this project's "deterministic logic, LLM only phrases" rule, since an
+    open-ended farming question has no fixed dataset to phrase from.
+    "unclear" is reserved for messages that aren't a real farming question
+    at all, not ones that are just outside these four."""
     context = f"Recent conversation:\n{recent_turns}\n\n" if recent_turns else ""
     prompt = (
-        "A farm voice assistant has three specialists:\n"
+        "A farm voice assistant has four specialists:\n"
         "weather - weather conditions or forecasts: rain, temperature, wind, humidity, any day\n"
         "crop - what to plant or grow, crop suitability, planting or harvest timing, "
         "general crop care like watering, spacing or fertiliser\n"
-        "plant - a sick or damaged plant: symptoms, pests, diseases\n\n"
+        "plant - a sick or damaged plant: symptoms, pests, diseases\n"
+        "general - any other genuine farming question that isn't specifically about "
+        "current/forecast weather, which crop to grow, or a sick plant\n\n"
         "Classify the farmer's latest message. Use the recent conversation to understand "
         "short follow-ups like 'and tomorrow?'. Answer unclear if the message is cut off, "
-        "garbled, not a farming question, or sounds like the assistant talking.\n\n"
+        "garbled, not a farming question at all, or sounds like the assistant talking.\n\n"
         f"{context}Latest message: \"{text}\"\n\n"
-        "Answer with one word: weather, crop, plant, or unclear."
+        "Answer with one word: weather, crop, plant, general, or unclear."
     )
     try:
         raw = llm_client.generate(prompt, system_instruction=_CLASSIFIER_SYSTEM)
     except RuntimeError:
         return None
     word = re.sub(r"[^a-z]", "", raw.strip().lower().split()[0]) if raw.strip() else ""
-    return word if word in ("weather", "crop", "plant") else None
+    return word if word in ("weather", "crop", "plant", "general") else None
 
 
 def suggest_redirect(text: str, active_domain: str) -> str | None:

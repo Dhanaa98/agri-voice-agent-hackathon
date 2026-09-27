@@ -79,6 +79,7 @@ from pydantic import BaseModel
 from . import config
 from .asr import StreamingASR
 from .domains.crop import CropAgent
+from .domains.general import GeneralAgent
 from .domains.plant import PlantAgent
 from .domains.weather import WeatherAgent
 from .farm_state import LEGACY_FARMER_KEY, FarmProfile, FarmState, FarmStore
@@ -92,6 +93,12 @@ DOMAIN_AGENTS = {
     "weather": WeatherAgent,
     "crop": CropAgent,
     "plant": PlantAgent,
+    # Not a keyword/wakeword domain -- only ever reached via
+    # classify_with_llm() returning "general" (see intent.py) for a
+    # genuine farming question outside the other three. No deterministic
+    # data behind it, so location isn't gated for it the way weather/crop
+    # are below.
+    "general": GeneralAgent,
 }
 
 # Same distinction as main.py: Plant holds a multi-turn session (up to 2
@@ -1162,6 +1169,8 @@ def _answer(
                     response = agent.handle(farm, pending_text, crop=crop, session_id=session.session_id)
                 elif pending_domain == "weather":
                     response = agent.handle(farm, location=location, question=pending_text)
+                elif pending_domain == "general":
+                    response = agent.handle(farm, question=pending_text)
                 else:
                     response = agent.handle(farm, crop_name=crop, question=pending_text)
             except Exception as exc:  # noqa: BLE001
@@ -1266,6 +1275,8 @@ def _answer(
             response = agent.handle(farm, text, crop=crop, session_id=session.session_id)
         elif domain == "weather":
             response = agent.handle(farm, location=location, question=text)
+        elif domain == "general":
+            response = agent.handle(farm, question=text)
         else:
             response = agent.handle(farm, crop_name=crop, question=text)
     except Exception as exc:  # noqa: BLE001 -- surface the failure to the farmer, don't crash the server

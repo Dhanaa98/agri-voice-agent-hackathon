@@ -140,6 +140,14 @@ class SessionState:
     # as the farmer names one, by voice or by tapping the picker (which
     # just resends the original text with farm_name set, bypassing this).
     pending_farm_question: tuple[str, str] | None = None
+    # Index of a just-created farm waiting for its location, asked as a
+    # follow-up right after "add a farm" with no location given -- see
+    # _handle_farm_management()'s add-farm branch. Checked BEFORE
+    # pending_weather_question in _answer() (more specific, must win): the
+    # next reply is applied to this farm's location directly, not
+    # forwarded to a weather agent that would answer with a forecast
+    # instead of saving anything.
+    pending_new_farm_location: int | None = None
     # (farm index, farm name) awaiting a yes/no reply to "delete FARM? this
     # can't be undone" -- see _handle_farm_management(). Name is stored
     # alongside the index so a stale confirmation (the farm list changed
@@ -664,9 +672,26 @@ def _looks_like_a_place(reply_text: str, stripped_place: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _ADD_FARM_RE = re.compile(
-    r"^(?:add|create|make|set up)\s+(?:a\s+)?(?:new\s+)?farm\s*"
+    # A leading "I need to"/"I want to"/"can you"/"let's"/etc. is stripped
+    # first (see _match_add_farm) rather than folded in here, so this stays
+    # readable; what's left must still start with the command verb.
+    r"^(?:add|create|make|set up|start)\s+(?:a\s+)?(?:new\s+)?farm\s*"
     r"(?:(?:called|named)\s+(?P<name1>.+?))?"
     r"(?:\s+in\s+(?P<location>.+?))?$",
+    re.IGNORECASE,
+)
+# Natural lead-ins that precede the actual command in ordinary speech --
+# "I need to create a farm", "can you add a farm for me", "I'd like to make
+# a new farm". Stripped before _ADD_FARM_RE is tried. REAL BUG FOUND AND
+# FIXED (2026-09-27, reported live): _ADD_FARM_RE required the message to
+# START with the command verb, so any natural phrasing in front of it
+# ("I need to...") meant the whole sentence matched nothing at all and
+# silently fell through to normal domain routing instead of creating
+# anything.
+_ADD_FARM_LEAD_IN_RE = re.compile(
+    r"^(?:i\s+(?:need|want|would like|have)\s+to\s+|i'?d\s+like\s+to\s+|"
+    r"can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|"
+    r"please\s+|let'?s\s+|i\s+want\s+)+",
     re.IGNORECASE,
 )
 # The captured name here is deliberately NOT stripped of a leading/trailing
@@ -684,6 +709,16 @@ _RELOCATE_FARM_RE = re.compile(
     r"(?P<name>.+?)?(?:'s)?\s*location\s+to\s+(?P<location>.+)$",
     re.IGNORECASE,
 )
+# A genuine question, not a command -- "what farms do I have", "what farms
+# are there", "list my farms", "how many farms do I have". Added because a
+# farmer naturally asking this (or an ASR mangling of it, e.g. "what are my
+# phone names" for "what are my farm names") had nothing to answer it --
+# it fell through every branch to the generic clarify fallback.
+_LIST_FARMS_RE = re.compile(
+    r"\b(?:what|which|how many)\s+farms?\b|\blist\s+(?:my\s+)?farms?\b|"
+    r"\bmy\s+farms?\s+(?:names?|list)\b|\bfarm\s+names?\b",
+    re.IGNORECASE,
+)
 _CONFIRM_YES_RE = re.compile(r"^(yes|yeah|yep|confirm|do it|go ahead|sure)\b", re.IGNORECASE)
 _CONFIRM_NO_RE = re.compile(r"^(no|nope|don'?t|cancel|stop|nevermind|never mind)\b", re.IGNORECASE)
 
@@ -693,11 +728,14 @@ def _clean_farm_phrase(text: str) -> str:
 
 
 def _match_add_farm(text: str) -> tuple[str, str] | None:
-    """("Add a farm called North Field in Kandy") -> ("North Field",
-    "Kandy"). Name defaults to "Farm N" (like the sidebar's own Add Farm
-    button) when the farmer didn't give one -- "add a farm in Kandy" alone
-    is still a reasonable, actionable command."""
-    m = _ADD_FARM_RE.match(text.strip())
+    """("I need to create a farm called North Field in Kandy") -> ("North
+    Field", "Kandy"). Name defaults to "Farm N" (like the sidebar's own Add
+    Farm button) when the farmer didn't give one -- "add a farm in Kandy"
+    or even bare "I need to create a farm" alone is still a reasonable,
+    actionable command; the missing piece is asked for as a follow-up
+    rather than the whole command being rejected."""
+    stripped = _ADD_FARM_LEAD_IN_RE.sub("", text.strip())
+    m = _ADD_FARM_RE.match(stripped)
     if not m:
         return None
     name = _clean_farm_phrase(m.group("name1") or "")
@@ -766,13 +804,16 @@ def _resolve_farm_reference(session: SessionState, name: str) -> int | None:
 
 
 def _handle_farm_management(text: str, session: SessionState) -> dict | None:
-    """Deterministic add/rename/relocate/delete commands -- returns a reply
-    dict if `text` matched one, else None (falls through to normal domain
-    routing). Checked before the pending-location/farewell/domain logic in
-    _answer() since these commands are about the farm list, not a
+    """Deterministic add/rename/relocate/delete/list commands -- returns a
+    reply dict if `text` matched one, else None (falls through to normal
+    domain routing). Checked before the pending-location/farewell/domain
+    logic in _answer() since these commands are about the farm list, not a
     question for any domain agent."""
     stripped = text.strip()
 
+    # A pending deletion confirmation always takes priority (a yes/no reply
+    # shouldn't be re-interpreted as a "list my farms" question just
+    # because it happens to contain the word "farm").
     if session.pending_farm_deletion is not None:
         idx, name = session.pending_farm_deletion
         if _CONFIRM_YES_RE.match(stripped):
@@ -792,6 +833,17 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
             session.session_id,
         )
 
+    if _LIST_FARMS_RE.search(stripped):
+        if not _farm_state.farms:
+            response = "You don't have any farms yet. Say \"add a farm\" to create one."
+        elif len(_farm_state.farms) == 1:
+            f = _farm_state.farms[0]
+            response = f"You have one farm: {f.name}" + (f", in {f.location}." if f.location else ", no location set yet.")
+        else:
+            parts = [f"{f.name} ({f.location})" if f.location else f"{f.name} (no location set)" for f in _farm_state.farms]
+            response = f"You have {len(_farm_state.farms)} farms: " + ", ".join(parts) + "."
+        return _reply("general", response, None, text, session.session_id)
+
     add_match = _match_add_farm(stripped)
     if add_match is not None:
         name, location = add_match
@@ -799,7 +851,21 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
         idx = _farm_state.add_farm(name, location=location, location_confirmed=bool(location))
         session.active_farm_index = idx
         _farm_state.save(config.FARM_STATE_PATH)
-        response = f"Added {name}" + (f", set to {location}." if location else ". What town or area is it in?")
+        if location:
+            response = f"Added {name}, set to {location}."
+        else:
+            # REAL BUG FOUND AND FIXED (2026-09-27, reported live: giving a
+            # location after struggling to say it a few times got answered
+            # with a climate forecast instead of actually setting it): this
+            # follow-up question used to set no pending state at all, so
+            # the farmer's next reply had nothing to anchor it and fell
+            # through to normal domain routing, which read a place name as
+            # a WEATHER question's location and answered with a forecast
+            # instead of saving it to the farm. pending_new_farm_location
+            # now holds which farm is waiting, so the very next reply --
+            # however many attempts it takes -- is applied to it directly.
+            session.pending_new_farm_location = idx
+            response = f"Added {name}. What town or area is it in?"
         return _reply("general", response, _farm_state.farms[idx], text, session.session_id)
 
     delete_name = _match_delete_farm(stripped)
@@ -905,13 +971,72 @@ def _answer(
         session.pending_weather_question = None
         session.pending_farm_question = None
         session.pending_farm_deletion = None
+        session.pending_new_farm_location = None
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
 
-    # Farm management (add/rename/relocate/delete a farm) -- checked before
-    # domain routing and the pending-location/pending-farm-choice branches,
-    # since these commands are about the farm LIST, not a question for any
-    # domain agent. Also handles a pending "delete FARM? yes/no" reply.
+    # The farmer is answering "what town or area is it in?" for a farm they
+    # JUST created -- takes priority over everything below (including farm
+    # management commands: a struggling/hesitant reply here shouldn't
+    # accidentally parse as some other command) so the location is applied
+    # directly to that farm, never forwarded to a weather agent as if it
+    # were an ordinary "where's my farm" answer. See pending_new_farm_location's
+    # docstring for the bug this fixes.
+    if not mid_plant_conversation and session.pending_new_farm_location is not None:
+        idx = session.pending_new_farm_location
+        if not (0 <= idx < len(_farm_state.farms)):
+            # The farm was deleted from under this pending question (e.g.
+            # from another tab) -- don't keep asking about something that
+            # no longer exists.
+            session.pending_new_farm_location = None
+        else:
+            place = _clean_farm_phrase(text)
+            farm = _farm_state.farms[idx]
+            # Geocode it for real rather than guessing from word shape --
+            # REAL BUG FOUND AND FIXED (2026-09-27): a word-list heuristic
+            # here accepted "umm let me think" as a place name outright
+            # (none of its words happened to be on the blocklist). The
+            # weather agent's own geocoder is the actual source of truth
+            # for "is this a real place", the same one every other location
+            # in this app is validated against.
+            weather_agent = _agents.get("weather")
+            geocode_failed = False
+            if place and weather_agent is not None:
+                try:
+                    _, _, country_code = weather_agent.geocode(place)
+                except ValueError:
+                    geocode_failed = True
+                except Exception:  # noqa: BLE001 -- network/API hiccup: don't block farm creation over it
+                    country_code = ""
+                else:
+                    session.pending_new_farm_location = None
+                    farm.location = place
+                    farm.location_confirmed = True
+                    farm.country_code = country_code
+                    _farm_state.save(config.FARM_STATE_PATH)
+                    return _reply("general", f"{farm.name} is set to {place}.", farm, text, session.session_id)
+            if place and not geocode_failed and weather_agent is None:
+                # No weather agent configured (missing API key) -- can't
+                # verify, so accept it as given rather than blocking farm
+                # setup entirely on an unrelated missing key.
+                session.pending_new_farm_location = None
+                farm.location = place
+                farm.location_confirmed = True
+                _farm_state.save(config.FARM_STATE_PATH)
+                return _reply("general", f"{farm.name} is set to {place}.", farm, text, session.session_id)
+            return _reply(
+                "general",
+                "Sorry, I didn't catch a place name there. What town or area is your farm in?",
+                farm,
+                text,
+                session.session_id,
+            )
+
+    # Farm management (add/rename/relocate/delete/list farms) -- checked
+    # before domain routing and the pending-location/pending-farm-choice
+    # branches, since these commands are about the farm LIST, not a
+    # question for any domain agent. Also handles a pending "delete FARM?
+    # yes/no" reply.
     if not mid_plant_conversation:
         managed = _handle_farm_management(text, session)
         if managed is not None:

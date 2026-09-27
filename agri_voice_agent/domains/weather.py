@@ -116,7 +116,13 @@ class WeatherAgent:
         if not self.api_key:
             raise RuntimeError("OPENWEATHER_API_KEY is not set. Copy .env.example to .env and fill it in.")
 
-    def _geocode(self, location: str) -> tuple[float, float, str]:
+    def geocode(self, location: str) -> tuple[float, float, str]:
+        """Resolve a place name to (lat, lon, ISO country code) via
+        OpenWeatherMap's free geocoding endpoint. Public (not the
+        module-internal detail it started as) because it's the real
+        source of truth for "is this actually a place" -- farmer_server.py
+        uses it to validate a spoken location before saving it to a farm,
+        rather than a heuristic guess at what a place name "looks like"."""
         resp = requests.get(
             GEOCODE_URL,
             params={"q": location, "limit": 1, "appid": self.api_key},
@@ -159,7 +165,7 @@ class WeatherAgent:
         return name or country or f"{lat},{lon}"
 
     def fetch_weather(self, location: str) -> tuple[WeatherSnapshot, str, list[DayForecast]]:
-        lat, lon, country_code = self._geocode(location)
+        lat, lon, country_code = self.geocode(location)
 
         current_resp = requests.get(
             CURRENT_URL,

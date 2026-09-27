@@ -4,6 +4,43 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Struggling-to-create-a-farm bug, plus list-farms and natural add-farm
+  phrasing (2026-09-27).** User reported: "I need to create a farm",
+  struggle to give the location a few times, then finally say it -- and
+  the location gets answered with a climate forecast instead of actually
+  being saved to the new farm.
+  Two real bugs, both in farmer_server.py:
+  1. `_ADD_FARM_RE` required the message to START with the command verb
+     (add/create/make/...), so any natural lead-in ("I need to create a
+     farm") matched nothing at all and silently fell through to normal
+     domain routing. Fixed with `_ADD_FARM_LEAD_IN_RE`, stripped before
+     matching -- covers "I need/want/would like to...", "can/could you
+     please...", "let's...".
+  2. When a farm is created with no location, the follow-up "what town or
+     area is it in?" set NO pending state at all -- so the very next reply
+     (however many attempts it took) had nothing to anchor it and fell
+     through to ordinary domain routing, which read a place name as a
+     WEATHER question's location and answered with a forecast instead of
+     saving anything. Added `SessionState.pending_new_farm_location`
+     (which farm is waiting, checked before farm-management commands and
+     the generic pending-weather-question branch so it always wins) and,
+     to actually verify a struggling reply before accepting it, made
+     `WeatherAgent._geocode` public as `.geocode()` and call it directly --
+     a first attempt at a heuristic word-blocklist accepted "umm let me
+     think" outright (none of its words were on the list), so this now
+     asks the real geocoding API "is this an actual place" rather than
+     guessing from word shape, matching the same validation the original
+     pending-weather-location flow already used correctly.
+  Also added, from a live screenshot showing "what farms are there" (and
+  its ASR mangling "what are my phone names") getting the generic "sorry,
+  I didn't catch that": a `_LIST_FARMS_RE` recognizer answering how many
+  farms exist and their names/locations -- this was a genuine question
+  with no handler anywhere, not a command.
+  Verified live end to end: create with no name -> "umm let me think" ->
+  "sorry I mean" (both correctly rejected, asked again) -> "Nuwara Eliya"
+  (accepted, geocoded, saved to the farm) -- and confirmed farewell,
+  normal weather routing, and add-with-location-upfront all still work
+  afterward.
 - **Voice/chat farm management: add, rename, relocate, delete (2026-09-27).**
   User asked for full farm-list CRUD by voice command, not just clicking
   the sidebar. Added a new deterministic regex-matched command layer

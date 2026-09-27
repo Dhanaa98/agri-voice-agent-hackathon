@@ -251,6 +251,10 @@ class ChatOut(BaseModel):
     # frontend should ask the farmer to pick one of these names and resend
     # with `farm_name` set.
     ambiguous_farms: list[str] | None = None
+    # True when this reply was a farewell -- the frontend ends the current
+    # voice conversation (stops listening for a follow-up, back to
+    # wakeword-only) instead of waiting out the usual follow-up window.
+    end_conversation: bool = False
 
 
 @app.get("/")
@@ -443,6 +447,28 @@ async def resolve_location(body: ResolveLocationIn, request: Request) -> Resolve
 CLARIFY_TEXT = "Sorry, I didn't catch that. Could you say it again?"
 ASK_LOCATION_TEXT = "Sure. Which town or area is your farm in?"
 LOCATION_NOT_FOUND_TEXT = "Sorry, I couldn't find that place. Which town or city is your farm near?"
+GOODBYE_TEXT = "You're welcome! Let me know if you need anything else. Bye!"
+
+# A closing remark, not a real question -- checked before routing so "thank
+# you" doesn't get treated as an unclear farming question or (worse)
+# accidentally matched to a domain by a stray keyword. Deliberately just a
+# fixed phrase list, not an LLM call: a farewell is easy to recognise
+# outright and getting this wrong would end a conversation the farmer didn't
+# actually mean to end.
+_FAREWELL_PHRASES = (
+    "thank you", "thanks", "thank u", "thankyou", "that's all", "that is all",
+    "that's it", "that is it", "nothing else", "no that's all", "bye", "goodbye",
+    "good bye", "see you", "that's everything", "ok thanks", "okay thanks",
+    "alright thanks", "all done", "i'm done", "im done", "we're done",
+)
+
+
+def _is_farewell(text: str) -> bool:
+    lowered = text.lower().strip(" .!?")
+    return lowered in _FAREWELL_PHRASES or any(
+        lowered == phrase or lowered.startswith(phrase + " ") or lowered.endswith(" " + phrase)
+        for phrase in _FAREWELL_PHRASES
+    )
 
 # The weather question we're holding while waiting for the farmer to tell
 # us where their farm is -- answered as soon as they reply with a place.
@@ -481,6 +507,13 @@ def _answer(text: str, location: str | None = None, farm_name: str | None = None
     text = (text or "").strip()
     if not text:
         return _reply("general", CLARIFY_TEXT, None, text)
+
+    # A farewell ends the conversation -- but not mid multi-turn Plant
+    # diagnosis (a short answer like "that's it" could coincidentally match)
+    # and not while we're waiting on a location reply.
+    mid_plant_conversation = _current_domain == "plant" and not _domain_conversation_done("plant")
+    if _pending_weather_question is None and not mid_plant_conversation and _is_farewell(text):
+        return _reply("general", GOODBYE_TEXT, _farm_state.active_farm, text, end_conversation=True)
 
     # The farmer is answering our "which town is your farm in?" question --
     # unless they've clearly moved on to a crop or plant question instead.

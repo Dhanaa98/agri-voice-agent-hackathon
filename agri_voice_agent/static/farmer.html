@@ -2014,7 +2014,7 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
     let stopCapture = null;
     let idleTimer = null;
     let finished = false;
-    const outcome = { gotResult: false, timedOut: false, speech: null };
+    const outcome = { gotResult: false, timedOut: false, speech: null, endConversation: false };
 
     // The local WS "open" event fires almost instantly (it's just the
     // FastAPI handshake) -- it says nothing about whether the server's
@@ -2058,6 +2058,7 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
         state.messages.push(youMessage);
         renderMessages();
         outcome.speech = handleAgentReply(data, { spoken: true, retryText: data.transcript });
+        outcome.endConversation = !!data.end_conversation;
       }
       cleanup();
     });
@@ -2430,6 +2431,10 @@ async function startWakewordListening() {
             { gate, idleTimeoutMs: FOLLOWUP_WINDOW_MS }
           );
           firstTurn = false;
+          if (outcome.endConversation) {
+            await outcome.speech;
+            break;
+          }
           if (!outcome.gotResult) {
             if (outcome.timedOut) {
               hideVoiceStatus();

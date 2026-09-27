@@ -2021,18 +2021,63 @@ function hideVoiceStatus() {
   els.voiceStatusRow.hidden = true;
 }
 
+// Simple single-pole low-pass filter, run over the FULL native-rate input
+// before any decimation -- REAL BUG FOUND AND FIXED (2026-09-27, reported
+// live: TTS-generated audio transcribed accurately, the farmer's own live
+// mic speech didn't). floatTo16kPcm used to just pick every Nth sample
+// (nearest-neighbor decimation) with NO filtering first. Whenever the
+// browser's AudioContext didn't actually honor the requested 16000Hz (very
+// common -- many browsers/OSes silently keep their 44100/48000Hz hardware
+// rate regardless what's requested, see getAudioContext()'s own comment),
+// that stride-based decimation aliased high-frequency content down into
+// the speech band as noise -- exactly the kind of distortion a clean,
+// already-correctly-sampled TTS file would never have, but live mic audio
+// always does. This is a lightweight IIR low-pass (not a proper windowed-
+// sinc resampler), but cutting content above ~Nyquist/2 of the TARGET rate
+// before decimating removes the aliasing that was actually causing bad
+// transcripts; state persists across calls (see lpfState below) so the
+// filter doesn't reset every 4096-sample ScriptProcessor chunk and click.
+const lpfState = { prev: 0 };
+
+function lowPassFilter(float32, inputSampleRate, cutoffHz) {
+  const rc = 1 / (2 * Math.PI * cutoffHz);
+  const dt = 1 / inputSampleRate;
+  const alpha = dt / (rc + dt);
+  const out = new Float32Array(float32.length);
+  let prev = lpfState.prev;
+  for (let i = 0; i < float32.length; i++) {
+    prev = prev + alpha * (float32[i] - prev);
+    out[i] = prev;
+  }
+  lpfState.prev = prev;
+  return out;
+}
+
 // Downsamples a Float32Array of mic samples (at the AudioContext's native
 // rate, usually 44100/48000Hz) to 16kHz 16-bit PCM bytes -- AssemblyAI's
 // streaming API and asr.py both expect exactly this format, same as the
 // raw int16 frames main.py's sounddevice capture produces locally.
 function floatTo16kPcm(float32, inputSampleRate) {
+  if (inputSampleRate > PCM_SAMPLE_RATE) {
+    // Cut off well below the target Nyquist (8kHz) so decimation can't
+    // fold anything audible back into the speech band -- human voice's
+    // useful intelligibility range for ASR sits well under 7kHz anyway.
+    float32 = lowPassFilter(float32, inputSampleRate, PCM_SAMPLE_RATE / 2.2);
+  }
   const ratio = inputSampleRate / PCM_SAMPLE_RATE;
   const outLength = Math.floor(float32.length / ratio);
   const buffer = new ArrayBuffer(outLength * 2);
   const view = new DataView(buffer);
   for (let i = 0; i < outLength; i++) {
-    const srcIndex = Math.floor(i * ratio);
-    let sample = Math.max(-1, Math.min(1, float32[srcIndex]));
+    // Linear interpolation between the two nearest native-rate samples,
+    // instead of just snapping to the nearest one -- a small additional
+    // accuracy gain once aliasing is already handled by the filter above.
+    const srcPos = i * ratio;
+    const srcIndex = Math.floor(srcPos);
+    const frac = srcPos - srcIndex;
+    const s0 = float32[srcIndex] || 0;
+    const s1 = float32[srcIndex + 1] !== undefined ? float32[srcIndex + 1] : s0;
+    let sample = Math.max(-1, Math.min(1, s0 + (s1 - s0) * frac));
     sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
     view.setInt16(i * 2, sample, true);  // little-endian, matches Encoding.pcm_s16le
   }
@@ -2042,7 +2087,7 @@ function floatTo16kPcm(float32, inputSampleRate) {
 async function getMicStream() {
   if (voice.micStream) return voice.micStream;
   voice.micStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
   return voice.micStream;
 }
@@ -2166,6 +2211,7 @@ async function captureMicPcm(onChunk) {
   const processor = ctx.createScriptProcessor(4096, 1, 1);
   source.connect(processor);
   processor.connect(ctx.destination);
+  lpfState.prev = 0;  // fresh low-pass state for this utterance, not leftover from the last one
   const handler = (event) => {
     const input = event.inputBuffer.getChannelData(0);
     onChunk(floatTo16kPcm(input, ctx.sampleRate));

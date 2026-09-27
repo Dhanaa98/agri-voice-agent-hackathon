@@ -109,6 +109,39 @@ Running log of build progress for this project at
      farmer B's "add another farm called Riverside in Kampala" created it
      only in farmer B's own farm list, invisible to farmer A and
      vice versa -- matching the exact scenario reported live.
+- **Bare farm name unrecognized, and crop questions never asking for
+  location (2026-09-27).** User reported: said "delete" then, separately,
+  just "farm 1" -- got "sorry, I didn't catch that" instead of "what
+  should I do with Farm 1?"; asked "what should I grow" with no location
+  set and got a generic crop list instead of being asked where; then when
+  they volunteered the location afterward, THAT got "didn't catch that"
+  too.
+  1. Every farm-management command (`_ADD_FARM_RE`, `_DELETE_FARM_RE`,
+     etc.) requires the verb and the farm name in the SAME message. A bare
+     farm name on its own matched nothing there, and nothing in normal
+     domain routing either (no keyword). Added a fallback at the end of
+     `_handle_farm_management()`: a short message (<=4 words) that exactly
+     matches an existing farm's name now gets "What would you like to do
+     with X -- delete it, rename it, change its location, or make it
+     active?" instead of silently falling through.
+  2. The location-ask gate (`if domain == "weather" and not location and
+     not farm.location_confirmed...`) only ever fired for weather --
+     crop's `assess_crop()` reads the same farm climate/country context
+     but was never gated, so it just answered immediately with whatever
+     the (possibly wrong/default) location implied. Extended the gate to
+     `domain in ("weather", "crop")`. The bigger fix: `pending_weather_
+     question` (a bare `str`) was hardcoded to always resume by calling
+     the WEATHER agent once a location arrived, so even if crop had asked,
+     the follow-up reply had nothing to anchor to. Renamed/generalized to
+     `pending_location_question: tuple[domain, question]`, and the
+     resume branch now calls whichever domain actually asked (weather or
+     crop) instead of assuming weather.
+  Verified end-to-end: bare "farm 1" (well, a real farm's exact name) now
+  gets the "what would you like to do" prompt; "what should I grow" with
+  no location asks "which town or area is your farm in?"; replying with a
+  place name now correctly returns crop suitability for that location
+  instead of "didn't catch that"; weather's existing location flow
+  re-tested and still unaffected by the generalization.
 - **Mic-permission delay on mobile (2026-09-27).** Reported live: slow/
   seemingly-broken mic permission prompt on mobile. Root cause:
   startWakewordListening() loaded the entire wakeword pipeline (WASM

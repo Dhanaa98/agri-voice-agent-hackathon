@@ -132,9 +132,14 @@ class SessionState:
     # question) -- None until then, which is what makes the ambiguous-farm
     # question fire again at the start of every new session.
     active_farm_index: int | None = None
-    # The weather question being held while this session waits for a
-    # location reply (see _answer()'s pending-location branch).
-    pending_weather_question: str | None = None
+    # (domain, original question text) being held while this session waits
+    # for a location reply (see _answer()'s pending-location branch).
+    # Started out weather-only ("what's the weather" with no known
+    # location); now also used for crop questions, since crop suitability
+    # reads farm.to_prompt_context()'s climate/country data too and used to
+    # just answer generically instead of asking -- see the 2026-09-27
+    # "answers a generic list instead of asking for location" bug.
+    pending_location_question: tuple[str, str] | None = None
     # (domain, original question text) being held while this session waits
     # to be told WHICH farm the question is about -- set whenever
     # resolve_active_farm() returns ambiguous_farm_names, answered as soon
@@ -144,7 +149,7 @@ class SessionState:
     # Index of a just-created farm waiting for its location, asked as a
     # follow-up right after "add a farm" with no location given -- see
     # _handle_farm_management()'s add-farm branch. Checked BEFORE
-    # pending_weather_question in _answer() (more specific, must win): the
+    # pending_location_question in _answer() (more specific, must win): the
     # next reply is applied to this farm's location directly, not
     # forwarded to a weather agent that would answer with a forecast
     # instead of saving anything.
@@ -994,6 +999,29 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
         _farm_store.save(config.FARM_STATE_PATH)
         return _reply("general", f"{farm.name} is now set to {location}.", farm, text, session.session_id)
 
+    # REAL BUG FOUND AND FIXED (2026-09-27, reported live: said "delete"
+    # then, separately, just "farm 1" -- got "sorry, I didn't catch that"
+    # instead of "what should I do with Farm 1?"). Every command above
+    # requires the verb and the farm name in the SAME message; a farm name
+    # said on its own, with no command and nothing else pending, used to
+    # match nothing at all and fall through to the generic domain router
+    # (which also has no keyword for a bare "farm 1"). Only fires when the
+    # message is basically JUST a farm name (nothing else going on) so an
+    # ordinary sentence that happens to mention a farm ("how's farm 1
+    # doing") isn't hijacked into this.
+    if len(stripped.split()) <= 4:
+        idx = _find_farm_by_name(stripped)
+        if idx is not None:
+            farm = _farm_state.farms[idx]
+            return _reply(
+                "general",
+                f"What would you like to do with {farm.name} -- delete it, rename it, "
+                "change its location, or make it active?",
+                farm,
+                text,
+                session.session_id,
+            )
+
     return None
 
 
@@ -1041,7 +1069,7 @@ def _answer(
     # phrases (not substrings), so it's always safe to check first.
     mid_plant_conversation = session.current_domain == "plant" and not _domain_conversation_done("plant", session.session_id)
     if not mid_plant_conversation and _is_farewell(text):
-        session.pending_weather_question = None
+        session.pending_location_question = None
         session.pending_farm_question = None
         session.pending_farm_deletion = None
         session.pending_new_farm_location = None
@@ -1152,37 +1180,49 @@ def _answer(
         )
 
     # The farmer is answering our "which town is your farm in?" question --
-    # unless they've clearly moved on to a crop or plant question instead,
-    # or the reply plainly isn't a place at all (see _looks_like_a_place's
-    # docstring for the bug this guards against: this branch used to accept
-    # ANY non-crop/plant text as the location and geocode it literally, so
-    # a garbled or off-topic reply -- reported live on mobile, where ASR
-    # transcripts are noisier -- got sent to the weather API as a place
-    # name and just failed, re-asking forever).
-    if session.pending_weather_question is not None and detect_domain(text) not in ("crop", "plant"):
-        pending = session.pending_weather_question
-        place = location or _location_from_reply(text)
-        if location or _looks_like_a_place(text, place):
-            farm, _, _ = resolve_active_farm(session, farm_name, place)
-            try:
-                response = _agents["weather"].handle(farm, location=place, question=pending)
-            except ValueError:
-                return _reply("weather", LOCATION_NOT_FOUND_TEXT, farm, text, session.session_id)
-            except Exception as exc:  # noqa: BLE001
-                response = f"Something went wrong checking the weather: {exc}"
-            session.pending_weather_question = None
-            return _reply("weather", response, farm, text, session.session_id)
-        # Doesn't look like a place -- ask again rather than guessing, but
-        # don't just silently drop whatever they actually said either.
-        farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
-        return _reply(
-            "weather",
-            "Sorry, I didn't catch a place name there. Which town or city is your farm near?",
-            farm,
-            text,
-            session.session_id,
-        )
-    session.pending_weather_question = None
+    # unless they've clearly moved on to a different domain's question
+    # instead, or the reply plainly isn't a place at all (see
+    # _looks_like_a_place's docstring for the bug this guards against: this
+    # branch used to accept ANY non-crop/plant text as the location and
+    # geocode it literally, so a garbled or off-topic reply -- reported live
+    # on mobile, where ASR transcripts are noisier -- got sent to the
+    # weather API as a place name and just failed, re-asking forever).
+    # Originally weather-only; now shared with crop, since crop suitability
+    # reads farm climate/country too -- see pending_location_question's
+    # docstring for the "answered a generic crop list instead of asking for
+    # location" bug this fixes.
+    if session.pending_location_question is not None:
+        pending_domain, pending = session.pending_location_question
+        other_domains = {"crop", "plant", "weather"} - {pending_domain}
+        if detect_domain(text) not in other_domains:
+            place = location or _location_from_reply(text)
+            if location or _looks_like_a_place(text, place):
+                farm, _, _ = resolve_active_farm(session, farm_name, place)
+                pending_agent = _agents.get(pending_domain)
+                try:
+                    if pending_domain == "weather":
+                        response = pending_agent.handle(farm, location=place, question=pending)
+                    else:
+                        farm.location = place
+                        farm.location_confirmed = True
+                        response = pending_agent.handle(farm, crop_name=crop, question=pending)
+                except ValueError:
+                    return _reply(pending_domain, LOCATION_NOT_FOUND_TEXT, farm, text, session.session_id)
+                except Exception as exc:  # noqa: BLE001
+                    response = f"Something went wrong handling that: {exc}"
+                session.pending_location_question = None
+                return _reply(pending_domain, response, farm, text, session.session_id)
+            # Doesn't look like a place -- ask again rather than guessing,
+            # but don't just silently drop whatever they actually said either.
+            farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
+            return _reply(
+                pending_domain,
+                "Sorry, I didn't catch a place name there. Which town or city is your farm near?",
+                farm,
+                text,
+                session.session_id,
+            )
+    session.pending_location_question = None
 
     context_farm = (
         _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else _scratch_farm
@@ -1208,8 +1248,17 @@ def _answer(
         # Mid multi-turn Plant diagnosis: keep the farm it started on.
         farm, _, _ = resolve_active_farm(session, None, None)
 
-    if domain == "weather" and not location and not farm.location_confirmed and not extract_location(text):
-        session.pending_weather_question = text
+    # Both weather and crop answers depend on the farm's actual climate/
+    # location (farm.to_prompt_context() feeds it into both) -- REAL BUG
+    # FOUND AND FIXED (2026-09-27, reported live: "what should I grow" with
+    # no location set just answered a generic crop list instead of asking):
+    # this gate used to be weather-only, so a location-less crop question
+    # skipped straight to an answer, and if the farmer then volunteered a
+    # location afterward, pending_location_question (then weather-only
+    # too) had nothing to anchor it to and it fell through to "didn't
+    # catch that" instead of being applied.
+    if domain in ("weather", "crop") and not location and not farm.location_confirmed and not extract_location(text):
+        session.pending_location_question = (domain, text)
         return _reply(domain, ASK_LOCATION_TEXT, farm, text, session.session_id, switched=switched)
 
     try:

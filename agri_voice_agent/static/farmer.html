@@ -2519,6 +2519,23 @@ function hideEnableVoiceModal() {
 
 els.enableVoiceBtn.addEventListener("click", () => {
   hideEnableVoiceModal();
+  // REAL BUG FOUND AND FIXED (2026-09-27, reported live: "didn't hear any
+  // response it said"): speechSynthesis.speak() reliably produces audio on
+  // mobile Safari (and some other mobile browsers) only when the FIRST
+  // call happens synchronously inside a genuine user-gesture handler --
+  // every later call from code that isn't itself a click/tap (e.g. the
+  // wakeword greeting, fired from an async audio-processing callback) can
+  // be silently swallowed unless that first call already "unlocked" audio
+  // output for this page. There's no permission PROMPT for speech output
+  // the way there is for the microphone, so nothing ever told the farmer
+  // anything was wrong -- it just stayed silent. Priming it here, inside
+  // this click, with a near-silent utterance fixes every later spoken
+  // reply for the rest of the session.
+  try {
+    const unlock = new SpeechSynthesisUtterance(" ");
+    unlock.volume = 0.01;
+    window.speechSynthesis.speak(unlock);
+  } catch (e) { /* best-effort -- if this fails, later speak() calls would too */ }
   startWakewordListening().catch((err) => {
     addMessage("error", null, "Couldn't start voice listening. Check your microphone permission in the browser's site settings.");
     stopWakewordListening();

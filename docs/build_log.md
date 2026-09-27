@@ -4,6 +4,40 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Three real bugs from a live mobile Render session (2026-09-27).** User
+  tested on a deployed Render instance (not this dev server, so no local
+  logs existed) and reported: (1) a reply to "which town is your farm in?"
+  got treated as the place literally, even a whole unrelated sentence; (2)
+  saying "thank you" while a location question was pending kept asking for
+  a location instead of ending; (3) never heard any spoken reply on mobile.
+  Root causes and fixes:
+  1. The pending-location branch accepted ANY reply that wasn't a clear
+     crop/plant question as the place and geocoded it literally -- added
+     `_looks_like_a_place()` (short, no question mark, no ordinary sentence
+     words) as a real check before ever calling the weather API; a reply
+     that fails it gets "Sorry, I didn't catch a place name there" instead.
+  2. The farewell check used to be skipped entirely whenever a location or
+     farm question was pending, so "thank you" fell through into bug #1's
+     branch and got treated as a (failing) place name. Farewell is now
+     checked first, unconditionally except mid Plant diagnosis, and clears
+     any pending question when it fires.
+  3. speechSynthesis has no permission PROMPT the way the microphone does,
+     so a farmer never sees anything is wrong -- it just stays silent. On
+     mobile Safari (and other mobile browsers) `speak()` reliably produces
+     audio on the FIRST call only when that call happens synchronously
+     inside a real user-gesture handler; every later call from async code
+     (the wakeword greeting, spoken replies) can be silently dropped
+     unless that first call already unlocked audio output. Fixed by
+     speaking a near-silent utterance directly inside the "Enable voice"
+     button's click handler, priming audio for the rest of the session.
+  Verified live against this dev server: a garbled/off-topic reply to the
+  location question now re-asks instead of geocoding garbage, a real place
+  name still resolves correctly afterward, and "thank you" mid-location-
+  question now ends the conversation instead of chasing a location.
+  Also answered: Vercel can't host this app -- it needs a persistent
+  process for the /voice WebSocket and in-memory session state (the
+  SessionState dict, PlantAgent's diagnosis sessions), which serverless
+  functions don't provide; Render (or Railway/Fly.io) is the right shape.
 - **Per-session farm/domain/diagnosis state, voice-answerable farm picker
   (2026-09-27).** User reported that with 2+ farms, farm selection didn't
   ask again at the start of a session and could only be changed by

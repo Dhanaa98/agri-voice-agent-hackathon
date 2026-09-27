@@ -582,6 +582,37 @@ def _location_from_reply(text: str) -> str:
     return _LOCATION_REPLY_PREFIX.sub("", text.strip()).strip(" .!?,")
 
 
+# Words that show up in an ordinary sentence/question but essentially never
+# in a bare place name -- if the reply to "which town is your farm in?"
+# contains one of these, it's not actually answering that question (most
+# often a farewell or an unrelated new question that slipped past the
+# earlier checks, or a mangled ASR transcript), so it shouldn't be sent to
+# the geocoder as if it were a location.
+_NOT_A_PLACE_WORDS = {
+    "thank", "thanks", "please", "sorry", "what", "when", "where", "why",
+    "how", "who", "which", "weather", "rain", "temperature", "humidity",
+    "plant", "crop", "grow", "sick", "help", "yes", "no", "okay", "ok",
+}
+
+
+def _looks_like_a_place(reply_text: str, stripped_place: str) -> bool:
+    """True if a reply to "which town is your farm in?" plausibly names a
+    place rather than being something else entirely (a farewell, an
+    unrelated question, a garbled transcript) -- a real place name is
+    short and doesn't contain ordinary sentence words. Deliberately
+    conservative: a false "no" here just re-asks, which is always
+    recoverable, whereas a false "yes" silently geocodes nonsense (see the
+    build log's 2026-09-27 entry -- this used to accept anything)."""
+    if not stripped_place:
+        return False
+    words = stripped_place.lower().split()
+    if len(words) > 4:
+        return False
+    if "?" in reply_text:
+        return False
+    return not any(w.strip(".,!?") in _NOT_A_PLACE_WORDS for w in words)
+
+
 def _recent_turns(farm: FarmProfile, n: int = 4) -> str:
     return "\n".join(f"{t.role}: {t.text}" for t in farm.chat_history[-n:])
 
@@ -611,12 +642,21 @@ def _answer(
     if not text:
         return _reply("general", CLARIFY_TEXT, None, text, session.session_id)
 
-    # A farewell ends the conversation -- but not mid multi-turn Plant
-    # diagnosis (a short answer like "that's it" could coincidentally match)
-    # and not while we're waiting on a location or farm-choice reply.
+    # A farewell ends the conversation outright and clears any pending
+    # question -- checked FIRST and unconditionally except mid multi-turn
+    # Plant diagnosis (a short answer like "that's it" could coincidentally
+    # match a real follow-up answer there). REAL BUG FOUND AND FIXED
+    # (2026-09-27, reported live: "thank you" kept getting answered with
+    # 'Sorry, I couldn't find that place'): this used to skip the farewell
+    # check whenever a location or farm question was pending, so "thank
+    # you" fell through to the pending-location branch below, which had
+    # nothing better to do than treat "thank you" itself as the place name,
+    # fail to geocode it, and ask again. _is_farewell() only matches whole
+    # phrases (not substrings), so it's always safe to check first.
     mid_plant_conversation = session.current_domain == "plant" and not _domain_conversation_done("plant", session.session_id)
-    awaiting_reply = session.pending_weather_question is not None or session.pending_farm_question is not None
-    if not awaiting_reply and not mid_plant_conversation and _is_farewell(text):
+    if not mid_plant_conversation and _is_farewell(text):
+        session.pending_weather_question = None
+        session.pending_farm_question = None
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
 
@@ -657,19 +697,36 @@ def _answer(
         )
 
     # The farmer is answering our "which town is your farm in?" question --
-    # unless they've clearly moved on to a crop or plant question instead.
+    # unless they've clearly moved on to a crop or plant question instead,
+    # or the reply plainly isn't a place at all (see _looks_like_a_place's
+    # docstring for the bug this guards against: this branch used to accept
+    # ANY non-crop/plant text as the location and geocode it literally, so
+    # a garbled or off-topic reply -- reported live on mobile, where ASR
+    # transcripts are noisier -- got sent to the weather API as a place
+    # name and just failed, re-asking forever).
     if session.pending_weather_question is not None and detect_domain(text) not in ("crop", "plant"):
         pending = session.pending_weather_question
         place = location or _location_from_reply(text)
-        farm, _, _ = resolve_active_farm(session, farm_name, place)
-        try:
-            response = _agents["weather"].handle(farm, location=place, question=pending)
-        except ValueError:
-            return _reply("weather", LOCATION_NOT_FOUND_TEXT, farm, text, session.session_id)
-        except Exception as exc:  # noqa: BLE001
-            response = f"Something went wrong checking the weather: {exc}"
-        session.pending_weather_question = None
-        return _reply("weather", response, farm, text, session.session_id)
+        if location or _looks_like_a_place(text, place):
+            farm, _, _ = resolve_active_farm(session, farm_name, place)
+            try:
+                response = _agents["weather"].handle(farm, location=place, question=pending)
+            except ValueError:
+                return _reply("weather", LOCATION_NOT_FOUND_TEXT, farm, text, session.session_id)
+            except Exception as exc:  # noqa: BLE001
+                response = f"Something went wrong checking the weather: {exc}"
+            session.pending_weather_question = None
+            return _reply("weather", response, farm, text, session.session_id)
+        # Doesn't look like a place -- ask again rather than guessing, but
+        # don't just silently drop whatever they actually said either.
+        farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
+        return _reply(
+            "weather",
+            "Sorry, I didn't catch a place name there. Which town or city is your farm near?",
+            farm,
+            text,
+            session.session_id,
+        )
     session.pending_weather_question = None
 
     context_farm = (

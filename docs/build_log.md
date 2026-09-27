@@ -239,6 +239,35 @@ Running log of build progress for this project at
   suitable for my farm" (unchanged prompt path) -> still correctly gives a
   suitability verdict. Mic gain/noise-suppression change is browser-side
   and needs live-device re-testing after deploy (can't be curl-tested).
+- **Push-to-talk switched from the untested AssemblyAI pipeline to the
+  browser's built-in SpeechRecognition (2026-09-27).** User reported "I
+  don't think the mic works" and asked for the mic to fill the text box
+  live, with Enter/Send working as normal. Root cause: push-to-talk
+  (mic-btn) streamed raw audio through the exact same custom WS /voice ->
+  AssemblyAI pipeline as always-listening wakeword mode -- a path that had
+  never been exercised against a real mic->transcript round trip (no
+  ASSEMBLYAI_API_KEY configured locally; flagged as UNVERIFIED in
+  farmer_server.py's own comments), and needed that key just to make the
+  mic button appear at all (`mic_available` in /capabilities).
+  `startPushToTalk()`/`stopPushToTalk()` (farmer.html) rewritten to use
+  `window.SpeechRecognition`/`webkitSpeechRecognition` instead: no server
+  round-trip, no API key, fills `els.talkBox` live as interim results
+  arrive (appended after whatever was already typed, not replacing it),
+  and reuses the already-proven POST /chat path unchanged once the farmer
+  presses Enter or taps Send -- per explicit user choice (wait for Enter/
+  Send, not auto-send on silence, so a misheard word can be fixed first).
+  The mic button's visibility gate changed from the server's
+  `mic_available` (AssemblyAI-key-based) to a client-side
+  `browserSupportsSpeechRecognition()` check, since this path needs no
+  server capability at all. Always-listening wakeword mode is UNCHANGED --
+  it still legitimately needs the AssemblyAI streaming pipeline
+  (continuous background listening needs server-side transcription, not a
+  tap-to-start browser API), so streamPcmToVoiceSocket()/captureMicPcm()
+  stay exactly as they were, now used only by that path. This does NOT
+  fix or verify the AssemblyAI pipeline itself -- wakeword mode remains
+  the one still-unverified voice path (needs a real ASSEMBLYAI_API_KEY and
+  a live device test); this change simply took push-to-talk off of it
+  entirely rather than debugging it further.
 - **Context-aware interpreter replaces "didn't catch that" (2026-09-27).**
   Reported live: "let's focus on the farm in Zurich" (ASR: "Surich"), a
   garbled "focus on the format", and farm-creation requests all got

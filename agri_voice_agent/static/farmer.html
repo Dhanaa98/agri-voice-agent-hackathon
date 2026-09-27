@@ -1855,14 +1855,22 @@ async function loadCapabilities() {
     }
   });
 
-  if (state.capabilities.mic_available) {
+  // REAL BUG FOUND AND FIXED (2026-09-27, reported live: "I don't think
+  // the mic works" -- push-to-talk streamed raw audio to a custom
+  // AssemblyAI WebSocket pipeline that had never been exercised against a
+  // real mic end-to-end, and needs ASSEMBLYAI_API_KEY set server-side just
+  // to show the button at all). Replaced with the browser's own built-in
+  // SpeechRecognition (see startPushToTalk() below): no server key, no
+  // custom audio pipeline, fills the text box live as you talk, same as
+  // typing -- then Enter/Send works exactly as it already did. Gated on
+  // the browser actually supporting it, not on any server capability.
+  if (browserSupportsSpeechRecognition()) {
     els.micBtn.hidden = false;
   }
 
-  // The enable-voice prompt additionally needs at least one .onnx
-  // wakeword model actually present -- otherwise there's nothing to
-  // listen FOR, so the modal never offers a control that would just
-  // fail. Only push-to-talk (mic-btn above) still works in that case.
+  // The enable-voice prompt (always-listening wakeword mode) still needs
+  // the server-side AssemblyAI voice pipeline plus at least one .onnx
+  // wakeword model -- unrelated to push-to-talk above.
   const wakewordModels = state.capabilities.wakeword_models || {};
   const hasAnyWakeword = Object.values(wakewordModels).some(Boolean);
   if (state.capabilities.mic_available && hasAnyWakeword) {
@@ -1906,23 +1914,29 @@ els.talkBox.addEventListener("input", () => {
 // + streaming ASR (server-side, AssemblyAI via WS /voice) + spoken
 // replies (browser speechSynthesis).
 //
-// Two ways a farmer triggers voice input:
+// Two ways a farmer triggers voice input, using TWO DIFFERENT speech
+// recognizers -- not the same pipeline:
 //   1. Push-to-talk (mic-btn) -- tap, speak, tap again (or pause) to stop.
-//      Always available once mic_available is true, no wakeword needed.
+//      Uses the browser's own built-in SpeechRecognition (see
+//      startPushToTalk() below), filling the text box live exactly like
+//      typing -- Enter/Send works completely unchanged. No server
+//      round-trip, no AssemblyAI key needed. REAL BUG FOUND AND FIXED
+//      (2026-09-27, reported live: "I don't think the mic works" --
+//      push-to-talk used to stream through the same untested AssemblyAI
+//      WebSocket pipeline as wakeword mode below, and needed
+//      ASSEMBLYAI_API_KEY server-side just to show the mic button).
 //   2. Always-listening wakeword mode (wake-toggle) -- opt-in (continuous
 //      mic access has real battery/privacy cost, so this is never on by
 //      default). While enabled, raw audio frames are scored against
 //      whatever .onnx model(s) actually exist (server-reported via
 //      /capabilities' wakeword_models) using onnxruntime-web running
 //      entirely in the browser -- no audio leaves the device until the
-//      wakeword actually fires. On a match, the SAME streaming-to-ASR
-//      path as push-to-talk takes over for the farmer's next utterance.
-//
-// Both paths converge on streamPcmToVoiceSocket(), which opens WS /voice
-// and feeds it raw 16-bit PCM mono @16kHz -- the exact format asr.py's
-// StreamingASR expects, matching main.py's local-mic pipeline's audio
-// format even though the capture mechanism (browser vs sounddevice) is
-// completely different.
+//      wakeword actually fires. On a match, THIS path (only) streams to
+//      the server-side AssemblyAI pipeline via streamPcmToVoiceSocket(),
+//      which opens WS /voice and feeds it raw 16-bit PCM mono @16kHz --
+//      the exact format asr.py's StreamingASR expects, matching main.py's
+//      local-mic pipeline's audio format even though the capture
+//      mechanism (browser vs sounddevice) is completely different.
 // ============================================================
 
 const PCM_SAMPLE_RATE = 16000;
@@ -2242,26 +2256,79 @@ async function captureMicPcm(onChunk) {
   };
 }
 
-// ---------- Push-to-talk ----------
+// ---------- Push-to-talk (browser SpeechRecognition, not the AssemblyAI
+// WebSocket pipeline -- see loadCapabilities()'s comment on why) ----------
+//
+// Fills the text box live as the farmer talks (interim results included,
+// so partial words appear immediately rather than only the final phrase),
+// exactly like typing -- Enter/Send then works completely unchanged. No
+// audio ever leaves the device through this path; recognition runs
+// natively in the browser (Chrome/Edge/Safari; Firefox doesn't implement
+// this API yet, hence the capability check in loadCapabilities()).
 
-async function startPushToTalk() {
+function getSpeechRecognitionCtor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function browserSupportsSpeechRecognition() {
+  return !!getSpeechRecognitionCtor();
+}
+
+function startPushToTalk() {
   if (voice.streaming) return;
+  const Ctor = getSpeechRecognitionCtor();
+  if (!Ctor) {
+    addMessage("error", null, "Voice input isn't supported in this browser -- try typing instead.");
+    return;
+  }
+
+  const recognition = new Ctor();
+  recognition.lang = "en-US";
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  voice.speechRecognition = recognition;
+  voice.streaming = true;
+  // The text the farmer had already typed before tapping the mic --
+  // recognized speech is appended after it, not replacing it, so tapping
+  // the mic mid-sentence to add a word works the way it would while typing.
+  const baseText = els.talkBox.value ? els.talkBox.value.replace(/\s+$/, "") + " " : "";
+
   els.micBtn.classList.add("recording");
-  setVoiceStatus(null, "Connecting…");
-  await streamPcmToVoiceSocket(
-    (send) => {
-      let stopper = null;
-      captureMicPcm(send).then((stop) => { stopper = stop; });
-      return () => { if (stopper) stopper(); };
-    },
-    () => setVoiceStatus(null, "Listening — tap the mic again when you're done…")
-  );
-  els.micBtn.classList.remove("recording");
-  hideVoiceStatus();
+  setVoiceStatus(null, "Listening — tap the mic again when you're done…");
+
+  recognition.onresult = (event) => {
+    let transcript = "";
+    for (let i = 0; i < event.results.length; i++) {
+      transcript += event.results[i][0].transcript;
+    }
+    els.talkBox.value = baseText + transcript;
+    els.talkBox.dispatchEvent(new Event("input"));  // resizes the box, see the input listener below
+  };
+  recognition.onerror = (event) => {
+    // "no-speech"/"aborted" fire on ordinary silence or a manual stop --
+    // not real errors, don't show anything for those.
+    if (event.error !== "no-speech" && event.error !== "aborted") {
+      addMessage("error", null, "Couldn't hear that. Check your microphone permission and try again.");
+    }
+  };
+  recognition.onend = () => {
+    voice.streaming = false;
+    voice.speechRecognition = null;
+    els.micBtn.classList.remove("recording");
+    hideVoiceStatus();
+    els.talkBox.focus();
+  };
+  try {
+    recognition.start();
+  } catch (err) {
+    voice.streaming = false;
+    voice.speechRecognition = null;
+    throw err;  // caller (micBtn click handler) shows the permission-error message
+  }
 }
 
 function stopPushToTalk() {
-  if (voice.voiceSocket) voice.voiceSocket.close();
+  if (voice.speechRecognition) voice.speechRecognition.stop();
 }
 
 // ---------- Wakeword detection (client-side ONNX, real openWakeWord pipeline) ----------
@@ -2637,11 +2704,14 @@ els.micBtn.addEventListener("click", () => {
   if (voice.streaming) {
     stopPushToTalk();
   } else {
-    startPushToTalk().catch((err) => {
+    try {
+      startPushToTalk();
+    } catch (err) {
       addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
+      voice.streaming = false;
       els.micBtn.classList.remove("recording");
       hideVoiceStatus();
-    });
+    }
   }
 });
 

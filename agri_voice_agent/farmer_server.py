@@ -140,6 +140,13 @@ class SessionState:
     # as the farmer names one, by voice or by tapping the picker (which
     # just resends the original text with farm_name set, bypassing this).
     pending_farm_question: tuple[str, str] | None = None
+    # (farm index, farm name) awaiting a yes/no reply to "delete FARM? this
+    # can't be undone" -- see _handle_farm_management(). Name is stored
+    # alongside the index so a stale confirmation (the farm list changed
+    # underneath, e.g. from another tab, since the question was asked)
+    # is detected rather than deleting whatever now happens to sit at
+    # that index.
+    pending_farm_deletion: tuple[int, str] | None = None
     # Per-session Plant diagnostic conversation -- PlantAgent's own
     # _active_sessions dict is keyed by whatever session_id we pass it, so
     # this just needs to consistently pass the SAME id for a given browser
@@ -486,6 +493,37 @@ async def update_farm(index: int, body: UpdateFarmIn) -> FarmOut:
     return FarmOut(index=index, name=f.name, location=f.location, location_confirmed=f.location_confirmed, active=(index == _farm_state.active_farm_index))
 
 
+def _delete_farm(index: int) -> None:
+    """Remove a farm and keep every session's (and the global display's)
+    active_farm_index pointing at the right farm afterward -- every one of
+    them is just an index into this same list, so removing an entry must
+    shift or clear every reference to it consistently, or a farm removed
+    from one browser tab (or via the sidebar) would silently leave another
+    tab pointed at the wrong farm, or one past the end of the list."""
+    _farm_state.farms.pop(index)
+    if _farm_state.active_farm_index is not None:
+        if _farm_state.active_farm_index == index:
+            _farm_state.active_farm_index = None
+        elif _farm_state.active_farm_index > index:
+            _farm_state.active_farm_index -= 1
+    for other in _sessions.values():
+        if other.active_farm_index is None:
+            continue
+        if other.active_farm_index == index:
+            other.active_farm_index = None
+        elif other.active_farm_index > index:
+            other.active_farm_index -= 1
+    _farm_state.save(config.FARM_STATE_PATH)
+
+
+@app.delete("/farms/{index}")
+async def delete_farm(index: int) -> dict:
+    if not (0 <= index < len(_farm_state.farms)):
+        raise ValueError(f"No farm at index {index}")
+    _delete_farm(index)
+    return {"ok": True}
+
+
 class ResolveLocationIn(BaseModel):
     # GPS fix from the browser's navigator.geolocation, when the farmer
     # granted permission. Omitted (both None) triggers the IP-based
@@ -613,6 +651,215 @@ def _looks_like_a_place(reply_text: str, stripped_place: str) -> bool:
     return not any(w.strip(".,!?") in _NOT_A_PLACE_WORDS for w in words)
 
 
+# ---------------------------------------------------------------------------
+# Voice/chat farm management (add / rename / relocate / delete a farm) --
+# separate from the weather/crop/plant DOMAIN routing above, since these
+# commands are never "about" a farm's crops or weather, they're about the
+# farm LIST itself. Deterministic regex matching, same philosophy as
+# intent.py's keyword routing: a farm add/delete is destructive/persistent
+# enough that a hallucinated LLM guess at "did they mean to add a farm"
+# would be worse than just not recognizing the command and falling through
+# to normal domain routing (which will then say "sorry, I didn't catch
+# that" or answer a real question -- never silently do nothing).
+# ---------------------------------------------------------------------------
+
+_ADD_FARM_RE = re.compile(
+    r"^(?:add|create|make|set up)\s+(?:a\s+)?(?:new\s+)?farm\s*"
+    r"(?:(?:called|named)\s+(?P<name1>.+?))?"
+    r"(?:\s+in\s+(?P<location>.+?))?$",
+    re.IGNORECASE,
+)
+# The captured name here is deliberately NOT stripped of a leading/trailing
+# "farm" -- a real farm can genuinely be named "Farm 1" (the app's own
+# default auto-generated name!), so "delete Farm 1" must capture "Farm 1"
+# whole, not swallow the word "farm" as if it were just a command noun and
+# leave "1". _resolve_farm_reference() tries the full captured phrase
+# against the real farm list first and only falls back to a stripped
+# version if that fails, so this stays permissive without breaking the
+# common case.
+_DELETE_FARM_RE = re.compile(r"^(?:delete|remove|drop)\s+(?:the\s+)?(?P<name>.+)$", re.IGNORECASE)
+_RENAME_FARM_RE = re.compile(r"^rename\s+(?:the\s+)?(?P<old>.+?)\s+to\s+(?P<new>.+)$", re.IGNORECASE)
+_RELOCATE_FARM_RE = re.compile(
+    r"^(?:change|set|update)\s+(?:the\s+)?(?:location\s+(?:of|for)\s+)?"
+    r"(?P<name>.+?)?(?:'s)?\s*location\s+to\s+(?P<location>.+)$",
+    re.IGNORECASE,
+)
+_CONFIRM_YES_RE = re.compile(r"^(yes|yeah|yep|confirm|do it|go ahead|sure)\b", re.IGNORECASE)
+_CONFIRM_NO_RE = re.compile(r"^(no|nope|don'?t|cancel|stop|nevermind|never mind)\b", re.IGNORECASE)
+
+
+def _clean_farm_phrase(text: str) -> str:
+    return text.strip(" .!?,").strip()
+
+
+def _match_add_farm(text: str) -> tuple[str, str] | None:
+    """("Add a farm called North Field in Kandy") -> ("North Field",
+    "Kandy"). Name defaults to "Farm N" (like the sidebar's own Add Farm
+    button) when the farmer didn't give one -- "add a farm in Kandy" alone
+    is still a reasonable, actionable command."""
+    m = _ADD_FARM_RE.match(text.strip())
+    if not m:
+        return None
+    name = _clean_farm_phrase(m.group("name1") or "")
+    location = _clean_farm_phrase(m.group("location") or "")
+    return name, location
+
+
+def _match_delete_farm(text: str) -> str | None:
+    m = _DELETE_FARM_RE.match(text.strip())
+    if not m:
+        return None
+    name = _clean_farm_phrase(m.group("name"))
+    return name or None
+
+
+def _match_rename_farm(text: str) -> tuple[str, str] | None:
+    m = _RENAME_FARM_RE.match(text.strip())
+    if not m:
+        return None
+    old = _clean_farm_phrase(m.group("old"))
+    new = _clean_farm_phrase(m.group("new"))
+    if not old or not new:
+        return None
+    return old, new
+
+
+def _match_relocate_farm(text: str) -> tuple[str, str] | None:
+    m = _RELOCATE_FARM_RE.match(text.strip())
+    if not m:
+        return None
+    name = _clean_farm_phrase(m.group("name") or "")
+    location = _clean_farm_phrase(m.group("location"))
+    if not location:
+        return None
+    return name, location
+
+
+_LEADING_TRAILING_FARM_RE = re.compile(r"^farm\s+|\s+farm$", re.IGNORECASE)
+
+
+def _resolve_farm_reference(session: SessionState, name: str) -> int | None:
+    """A farm named in a management command ("delete Farm 2") -- exact
+    name match on the phrase AS SAID first (so a farm genuinely named
+    "Farm 1" -- the app's own auto-generated default -- still matches),
+    then the same loose in-sentence match voice answers to the ambiguous-
+    farm question use, then a leading/trailing "farm" stripped as a generic
+    noun (for "delete the north field farm" when the real name is "North
+    Field"), then (only for an empty/missing name, e.g. "delete this
+    farm") this session's own already-resolved farm. Never guesses across
+    multiple equally-plausible matches."""
+    if name:
+        idx = _find_farm_by_name(name)
+        if idx is not None:
+            return idx
+        idx = _find_farm_in_speech(name)
+        if idx is not None:
+            return idx
+        stripped = _clean_farm_phrase(_LEADING_TRAILING_FARM_RE.sub("", name))
+        if stripped and stripped != name:
+            idx = _find_farm_by_name(stripped)
+            if idx is not None:
+                return idx
+            return _find_farm_in_speech(stripped)
+        return None
+    return session.active_farm_index
+
+
+def _handle_farm_management(text: str, session: SessionState) -> dict | None:
+    """Deterministic add/rename/relocate/delete commands -- returns a reply
+    dict if `text` matched one, else None (falls through to normal domain
+    routing). Checked before the pending-location/farewell/domain logic in
+    _answer() since these commands are about the farm list, not a
+    question for any domain agent."""
+    stripped = text.strip()
+
+    if session.pending_farm_deletion is not None:
+        idx, name = session.pending_farm_deletion
+        if _CONFIRM_YES_RE.match(stripped):
+            session.pending_farm_deletion = None
+            if 0 <= idx < len(_farm_state.farms) and _farm_state.farms[idx].name == name:
+                _delete_farm(idx)
+                return _reply("general", f"Deleted {name}.", None, text, session.session_id)
+            return _reply("general", f"{name} is already gone.", None, text, session.session_id)
+        if _CONFIRM_NO_RE.match(stripped):
+            session.pending_farm_deletion = None
+            return _reply("general", "Okay, keeping it.", None, text, session.session_id)
+        return _reply(
+            "general",
+            f"Sorry, just say yes or no -- delete {name}?",
+            None,
+            text,
+            session.session_id,
+        )
+
+    add_match = _match_add_farm(stripped)
+    if add_match is not None:
+        name, location = add_match
+        name = name or f"Farm {len(_farm_state.farms) + 1}"
+        idx = _farm_state.add_farm(name, location=location, location_confirmed=bool(location))
+        session.active_farm_index = idx
+        _farm_state.save(config.FARM_STATE_PATH)
+        response = f"Added {name}" + (f", set to {location}." if location else ". What town or area is it in?")
+        return _reply("general", response, _farm_state.farms[idx], text, session.session_id)
+
+    delete_name = _match_delete_farm(stripped)
+    if delete_name is not None:
+        idx = _resolve_farm_reference(session, delete_name)
+        if idx is None or not (0 <= idx < len(_farm_state.farms)):
+            names = ", ".join(f.name for f in _farm_state.farms) or "none yet"
+            return _reply(
+                "general",
+                f"I couldn't find a farm called {delete_name or 'that'}. Your farms are: {names}.",
+                None,
+                text,
+                session.session_id,
+            )
+        farm = _farm_state.farms[idx]
+        session.pending_farm_deletion = (idx, farm.name)
+        return _reply(
+            "general",
+            f"Delete {farm.name}? This removes all its history and can't be undone -- say yes to confirm.",
+            None,
+            text,
+            session.session_id,
+        )
+
+    rename_match = _match_rename_farm(stripped)
+    if rename_match is not None:
+        old, new = rename_match
+        idx = _resolve_farm_reference(session, old)
+        if idx is None or not (0 <= idx < len(_farm_state.farms)):
+            names = ", ".join(f.name for f in _farm_state.farms) or "none yet"
+            return _reply(
+                "general", f"I couldn't find a farm called {old}. Your farms are: {names}.", None, text, session.session_id
+            )
+        _farm_state.farms[idx].name = new
+        _farm_state.save(config.FARM_STATE_PATH)
+        return _reply("general", f"Renamed {old} to {new}.", _farm_state.farms[idx], text, session.session_id)
+
+    relocate_match = _match_relocate_farm(stripped)
+    if relocate_match is not None:
+        name, location = relocate_match
+        idx = _resolve_farm_reference(session, name)
+        if idx is None or not (0 <= idx < len(_farm_state.farms)):
+            names = ", ".join(f.name for f in _farm_state.farms) or "none yet"
+            return _reply(
+                "general",
+                f"I couldn't find a farm called {name or 'that'}. Your farms are: {names}.",
+                None,
+                text,
+                session.session_id,
+            )
+        farm = _farm_state.farms[idx]
+        farm.location = location
+        farm.location_confirmed = True
+        farm.country_code = ""  # stale until the next weather call re-geocodes
+        _farm_state.save(config.FARM_STATE_PATH)
+        return _reply("general", f"{farm.name} is now set to {location}.", farm, text, session.session_id)
+
+    return None
+
+
 def _recent_turns(farm: FarmProfile, n: int = 4) -> str:
     return "\n".join(f"{t.role}: {t.text}" for t in farm.chat_history[-n:])
 
@@ -657,8 +904,18 @@ def _answer(
     if not mid_plant_conversation and _is_farewell(text):
         session.pending_weather_question = None
         session.pending_farm_question = None
+        session.pending_farm_deletion = None
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
+
+    # Farm management (add/rename/relocate/delete a farm) -- checked before
+    # domain routing and the pending-location/pending-farm-choice branches,
+    # since these commands are about the farm LIST, not a question for any
+    # domain agent. Also handles a pending "delete FARM? yes/no" reply.
+    if not mid_plant_conversation:
+        managed = _handle_farm_management(text, session)
+        if managed is not None:
+            return managed
 
     # The farmer is answering our "which farm is this about?" question --
     # by voice or typed text, not just by tapping the picker (which instead

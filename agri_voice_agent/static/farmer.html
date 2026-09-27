@@ -394,6 +394,21 @@
   }
   .farm-edit-cancel:hover { color: var(--side-ink); border-color: rgba(255, 255, 255, 0.4); }
 
+  .farm-edit-delete {
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 12px;
+    border-radius: var(--r-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--danger);
+    font-family: "Manrope", sans-serif;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .farm-edit-delete:hover { background: rgba(235, 138, 120, 0.12); border-color: var(--danger); }
+
   .sidebar-foot {
     margin-top: auto;
     display: flex;
@@ -1718,6 +1733,7 @@ function buildFarmEditPanel(farm, i) {
       <button type="button" class="farm-edit-save">Save</button>
       <button type="button" class="farm-edit-cancel">Cancel</button>
     </div>
+    <button type="button" class="farm-edit-delete">Delete this farm</button>
   `;
   const nameInput = panel.querySelector(".edit-farm-name");
   const locationInput = panel.querySelector(".edit-farm-location");
@@ -1726,6 +1742,7 @@ function buildFarmEditPanel(farm, i) {
     editingFarmIndex = null;
     loadFarmState();
   });
+  panel.querySelector(".farm-edit-delete").addEventListener("click", () => deleteFarmWithConfirm(i, farm.name));
   return panel;
 }
 
@@ -1739,6 +1756,19 @@ async function saveFarmEdit(index, name, location) {
       body: JSON.stringify({ name: trimmedName, location: location.trim() }),
     });
   } catch (e) { /* best-effort -- panel just closes on the stale data */ }
+  editingFarmIndex = null;
+  await loadFarmState();
+}
+
+// Same destructive-action safety as the voice/chat delete command (see
+// farmer_server.py's _handle_farm_management) -- a farm and all its
+// history is gone for good, so this always confirms first rather than
+// deleting on one click.
+async function deleteFarmWithConfirm(index, name) {
+  if (!window.confirm(`Delete ${name}? This removes all its history and can't be undone.`)) return;
+  try {
+    await fetch(`/farms/${index}`, { method: "DELETE" });
+  } catch (e) { /* best-effort -- list just refreshes to whatever the server actually has */ }
   editingFarmIndex = null;
   await loadFarmState();
 }
@@ -2365,8 +2395,30 @@ async function loadWakewordModels() {
 
 async function startWakewordListening() {
   if (voice.wakewordListening) return;
+
+  // REAL BUG FOUND AND FIXED (2026-09-27, reported live: "delay in
+  // accepting microphone permissions in mobile view"): this used to load
+  // the whole wakeword model pipeline (a WASM runtime plus three ONNX
+  // models fetched over the network) BEFORE ever calling getUserMedia(),
+  // so the native mic-permission dialog didn't even appear until all of
+  // that finished -- slow and silent on mobile networks/CPUs, which just
+  // looks like a broken or delayed permission prompt. Request the mic
+  // FIRST (fast, and the dialog should appear right after the tap that
+  // triggered it -- better for iOS Safari's gesture-linked permission
+  // rules too), then load models afterward with a visible status message
+  // so the wait is explained instead of silent.
+  let stream;
+  try {
+    stream = await getMicStream();
+  } catch (e) {
+    addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
+    return;
+  }
+
+  setVoiceStatus(null, "Setting up voice detection…");
   const models = await loadWakewordModels();
   if (!models) {
+    hideVoiceStatus();
     addMessage("error", null, "No complete wakeword model set is available yet — field.onnx/plant.onnx plus the shared melspectrogram.onnx and embedding_model.onnx all need to be in the server's wakeword models folder.");
     return;
   }
@@ -2387,7 +2439,6 @@ async function startWakewordListening() {
   // ahead/heard/error) so it doesn't sit there permanently at rest.
   hideVoiceStatus();
 
-  const stream = await getMicStream();
   const ctx = getAudioContext();
   const source = ctx.createMediaStreamSource(stream);
   const processor = ctx.createScriptProcessor(4096, 1, 1);

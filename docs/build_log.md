@@ -4,6 +4,48 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Voice/chat farm management: add, rename, relocate, delete (2026-09-27).**
+  User asked for full farm-list CRUD by voice command, not just clicking
+  the sidebar. Added a new deterministic regex-matched command layer
+  (`_handle_farm_management()` in farmer_server.py, checked before domain
+  routing since these commands are about the farm LIST, not a question for
+  any agent): "add a farm called X [in Y]" (location optional, asked for
+  next if omitted), "rename X to Y", "change/set X's location to Y",
+  "delete X" (always asks "delete X? this removes all its history and
+  can't be undone -- say yes to confirm" first, per user's explicit
+  choice; a session's pending_farm_deletion holds (index, name) so a stale
+  confirmation after the list changed underneath is caught rather than
+  deleting whatever now sits at that index). Regex-based like intent.py's
+  domain keywords, not LLM-based -- a hallucinated "did they mean to
+  delete a farm" guess would be worse than just not recognizing the
+  command. Farm name resolution (`_resolve_farm_reference`) tries the
+  exact phrase first, then the same loose in-sentence match voice answers
+  to the ambiguous-farm question already use, then a stripped-of-"farm"
+  fallback, then (empty name) this session's own already-resolved farm.
+  Also added `DELETE /farms/{index}` (was missing entirely -- only
+  add/rename/relocate had HTTP endpoints before) and a delete button in
+  the sidebar's farm edit panel (browser `confirm()`, same
+  destructive-action safety as the voice path), plus a shared
+  `_delete_farm()` helper that shifts/clears active_farm_index correctly
+  across the global display state AND every session's own resolved farm
+  (deleting farm N must decrement every index above N or a farm removed
+  from one tab silently points another tab at the wrong farm).
+  **Real bug caught by testing before committing:** the delete/rename
+  regexes stripped a leading/trailing "farm" as if it were only ever a
+  generic command noun, so "delete Farm 1" -- the app's own default
+  auto-generated farm name -- captured just "1" and failed to match
+  anything. Fixed by capturing the full phrase and letting farm-list
+  resolution try it whole before any stripping fallback.
+- **Mic-permission delay on mobile (2026-09-27).** Reported live: slow/
+  seemingly-broken mic permission prompt on mobile. Root cause:
+  startWakewordListening() loaded the entire wakeword pipeline (WASM
+  runtime + three ONNX models over the network) BEFORE ever calling
+  getUserMedia(), so the native permission dialog didn't appear until all
+  of that finished loading -- slow and silent on mobile networks/CPUs,
+  looking exactly like a delayed/broken prompt. Reordered to request the
+  mic first (fast, dialog appears right after the tap), then load models
+  afterward with a visible "Setting up voice detection…" status so the
+  wait is explained instead of silent.
 - **Three real bugs from a live mobile Render session (2026-09-27).** User
   tested on a deployed Render instance (not this dev server, so no local
   logs existed) and reported: (1) a reply to "which town is your farm in?"

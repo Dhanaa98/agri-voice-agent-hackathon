@@ -1116,13 +1116,13 @@
 </svg>
 
 <header class="mobile-topbar">
+  <button id="farms-drawer-toggle" type="button" aria-expanded="false" aria-controls="sidebar">
+    <svg class="ic"><use href="#i-menu"/></svg> Menu
+  </button>
   <div class="brand">
     <span class="brand-mark"><svg class="ic"><use href="#i-wheat"/></svg></span>
     <span class="brand-name">Farm Assistant</span>
   </div>
-  <button id="farms-drawer-toggle" type="button" aria-expanded="false" aria-controls="sidebar">
-    <svg class="ic"><use href="#i-menu"/></svg> Menu
-  </button>
 </header>
 
 <div class="drawer-backdrop" id="drawer-backdrop"></div>
@@ -1912,7 +1912,7 @@ const WAKEWORD_GREETING = "Hey, I'm the farm assistant. How can I help you today
 // wakeword again. If nothing is asked within this window, it says so and
 // drops back to wakeword-only listening.
 const FOLLOWUP_WINDOW_MS = 30_000;
-const CONVERSATION_END_TEXT = "Seems like you're not active now. Just say the wakeword whenever you need me.";
+const CONVERSATION_END_TEXT = "It seems you are no longer there. Ask me anything when you need.";
 
 const voice = {
   audioContext: null,

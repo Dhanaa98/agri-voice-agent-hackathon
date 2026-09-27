@@ -239,6 +239,38 @@ Running log of build progress for this project at
   suitable for my farm" (unchanged prompt path) -> still correctly gives a
   suitability verdict. Mic gain/noise-suppression change is browser-side
   and needs live-device re-testing after deploy (can't be curl-tested).
+- **crops_grown was never actually written (2026-09-27).** User asked: "is
+  this tracking the plants I have in the farm". Real gap: `FarmProfile.
+  crops_grown` existed, was read by `to_prompt_context()` (so it WOULD
+  have been used in every weather/crop/plant prompt) and round-tripped
+  through save/load correctly -- but nothing anywhere ever wrote to it.
+  "I'm growing rice and tomatoes" was answered like any other one-off
+  message and immediately forgotten, unlike `recent_symptoms_reported`
+  (Plant already writes to that one). Fixed:
+  - `FarmProfile.add_crops_grown()` (farm_state.py) -- appends,
+    deduplicated case-insensitively.
+  - `domains/crop.py`'s `mentioned_crops_grown()`: recognises a
+    declarative statement ("I'm growing X", "I planted X", "we have X")
+    via `_GROWING_STATEMENT_RE`, distinct from a suitability question
+    ("should I grow rice") or how-to question ("how do I grow rice") that
+    happens to name the same crop -- reuses the existing `mentioned_crops()`
+    crop-name extraction. `CropAgent.handle()` now calls this first and
+    saves any matches before doing anything else, plus a new prompt branch
+    that acknowledges what was saved (1-2 sentences) instead of forcing a
+    suitability verdict onto a sentence that wasn't a question.
+  - `interpreter.py`: most growing statements ("I'm growing X") don't hit
+    any of `detect_domain()`'s crop keywords (only "I grow X" does, via
+    the bare "grow" keyword), so they were reaching the interpreter, not
+    `CropAgent.handle()`, and its action list didn't mention this case --
+    made it explicit that "crop" also covers telling the assistant what's
+    already growing, and that the rewritten "question" should preserve a
+    growing statement's own wording rather than turning it into a
+    suitability question (which would have defeated the new regex).
+  Verified end-to-end: "I am growing rice and tomatoes" -> saved as
+  `crops_grown: ["tomato", "rice"]` on the active farm (confirmed via
+  GET /farm_state), acknowledged naturally instead of getting a
+  suitability verdict; a later "what am I growing" correctly recalls both
+  from the saved field, not from chat-history guesswork.
 - **AssemblyAI streaming model switched from multilingual to English-only
   (2026-09-27).** User asked specifically to improve transcription quality
   for the wakeword-triggered question path (asr.py -- the one AssemblyAI

@@ -85,6 +85,20 @@ class FarmProfile:
     # profile can't grow this file without bound.
     chat_history: list[ChatTurn] = field(default_factory=list)
 
+    def add_crops_grown(self, crops: list[str]) -> None:
+        """Record crops the farmer has said they're actually growing on
+        this farm -- see domains/crop.py's mentioned_crops_grown() for how
+        a message is recognised as this kind of statement rather than a
+        suitability/how-to question. Deduplicated case-insensitively (crop
+        names are stored/matched lowercase elsewhere, e.g. CropAgent.
+        assess_one()) so "I grow rice" then later "I'm also growing Rice"
+        doesn't double up."""
+        existing = {c.lower() for c in self.crops_grown}
+        for crop in crops:
+            if crop.lower() not in existing:
+                self.crops_grown.append(crop)
+                existing.add(crop.lower())
+
     def add_symptom_report(self, crop: str, symptoms: str, diagnosis: str | None = None) -> None:
         self.recent_symptoms_reported.append(
             SymptomReport(

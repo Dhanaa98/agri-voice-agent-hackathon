@@ -50,6 +50,32 @@ def is_how_to_question(question: str | None) -> bool:
     return bool(_HOW_TO_RE.search(question or ""))
 
 
+# A statement of fact about what's already growing ("I'm growing rice and
+# tomatoes", "I planted onions", "we have chili on the farm"), not a
+# suitability question ("should I grow rice") or a how-to question ("how
+# do I grow rice") -- those ask FOR a recommendation/instructions, this
+# TELLS the assistant something to remember. Distinguished from a bare
+# mentioned_crops() match (which alone would also catch "is rice suitable
+# for my farm") by requiring one of these declarative verb phrases.
+_GROWING_STATEMENT_RE = re.compile(
+    r"\b(?:i'?m (?:growing|planting|cultivating)|i (?:grow|plant|planted|cultivate|cultivated|have|"
+    r"already have)|we(?:'re| are)? (?:growing|planting)|we (?:grow|planted|have)|"
+    r"(?:currently )?(?:growing|planting)|already (?:growing|planted))\b",
+    re.IGNORECASE,
+)
+
+
+def mentioned_crops_grown(text: str | None) -> list[str]:
+    """Crop names from `text` when it reads as a statement of what's
+    already being grown, not a question about what to grow. Empty list
+    for anything else (including how-to/suitability questions that happen
+    to name a crop) -- see _GROWING_STATEMENT_RE."""
+    text = text or ""
+    if not _GROWING_STATEMENT_RE.search(text) or is_how_to_question(text):
+        return []
+    return mentioned_crops(text)
+
+
 def mentioned_crops(question: str | None) -> list[str]:
     """Crop names from CROPS (or their common alternative names) that
     appear as whole words in the question, plurals too, longest names
@@ -144,6 +170,19 @@ class CropAgent:
         best-fitting crops are recommended. The suitability verdicts are
         deterministic; the LLM answers the actual question from them.
         """
+        # REAL GAP FOUND (2026-09-27, user asked "is this tracking the
+        # plants I have in the farm"): farm.crops_grown existed, was read
+        # by to_prompt_context() and to_dict(), but nothing ever wrote to
+        # it -- "I'm growing rice and tomatoes" was answered like any other
+        # one-off message and never remembered. Checked first, before
+        # crop_name/mentioned_crops() decide what this message is ABOUT,
+        # since a growing-statement should still get a normal reply
+        # (mentioning what's now on record) rather than a different code
+        # path -- it only changes what gets saved, not how it's answered.
+        grown = mentioned_crops_grown(question)
+        if grown:
+            farm.add_crops_grown(grown)
+
         names = [crop_name.lower()] if crop_name else mentioned_crops(question)
         if names:
             assessments = [a for a in (self.assess_one(n, farm) for n in names) if a is not None]
@@ -174,7 +213,25 @@ class CropAgent:
 
         deterministic_summary = "\n".join(summary_lines)
 
-        if is_how_to_question(question):
+        if grown and not is_how_to_question(question):
+            # A pure "I'm growing X" statement, not also asking a
+            # suitability/how-to question in the same breath -- acknowledge
+            # what got saved rather than force a verdict onto a sentence
+            # that wasn't actually a question. Still passes the assessment
+            # so a genuinely serious mismatch (e.g. rice in a spot too dry
+            # for it) can be mentioned, per the same "background, don't
+            # lead with it" instruction as the how-to prompt.
+            prompt = (
+                "The farmer just told you what they're growing -- confirm you've noted it, in "
+                "1-2 short spoken sentences. Only mention a problem from the assessment below if "
+                "it's a genuinely serious mismatch for this farm's conditions; otherwise don't "
+                "volunteer suitability commentary they didn't ask for.\n\n"
+                f"Farmer said: {question}\n\n"
+                f"Now growing: {', '.join(grown)}\n\n"
+                f"Farm context:\n{farm.to_prompt_context()}\n\n"
+                f"Assessment (background only):\n{deterministic_summary}"
+            )
+        elif is_how_to_question(question):
             # "how do I grow rice" wants growing steps, not a suitability
             # verdict -- the assessment is passed as background only (so a
             # genuinely serious warning can still be mentioned briefly if

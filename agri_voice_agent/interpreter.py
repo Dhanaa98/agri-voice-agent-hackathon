@@ -46,7 +46,8 @@ def interpret(text: str, history: list[tuple[str, str]], farms: list[tuple[str, 
         f'Latest message: "{text}"\n\n'
         "Choose one action:\n"
         '- "weather": about weather or forecasts\n'
-        '- "crop": what to plant, crop suitability, or how to grow a crop\n'
+        '- "crop": what to plant, crop suitability, how to grow a crop, or telling the assistant '
+        "what they're already growing (e.g. \"I'm growing rice and tomatoes\")\n"
         '- "plant": a sick or damaged plant (symptoms, pests, disease)\n'
         '- "select_farm": the farmer wants to switch to / focus on / talk about one of their farms\n'
         '- "add_farm": the farmer wants to add or create a new farm\n'
@@ -57,7 +58,9 @@ def interpret(text: str, history: list[tuple[str, str]], farms: list[tuple[str, 
         "JSON keys:\n"
         '"action": one of the above.\n'
         '"question": for weather/crop/plant, the farmer\'s request rewritten to make sense on its own '
-        "using the conversation.\n"
+        "using the conversation -- EXCEPT when they're just stating what they're already growing, "
+        "where this should stay close to their own wording (e.g. keep \"I'm growing rice\" as-is, "
+        "don't turn it into \"is rice suitable?\").\n"
         '"farm": for select_farm (required) or weather/crop/plant (only if they named one), the exact '
         "farm name from the list above. Match loosely -- a location or a misheard name counts.\n"
         '"name": for add_farm, ONLY if the farmer explicitly named the farm (e.g. "called North '

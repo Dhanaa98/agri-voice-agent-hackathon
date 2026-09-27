@@ -4,6 +4,50 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Per-session farm/domain/diagnosis state, voice-answerable farm picker
+  (2026-09-27).** User reported that with 2+ farms, farm selection didn't
+  ask again at the start of a session and could only be changed by
+  clicking a farm in the sidebar, not by voice. Root cause: `_current_domain`,
+  `_farm_state.active_farm_index` (read for routing, not just sidebar
+  display) and `_pending_weather_question` were module-level globals shared
+  by every browser tab and every visit forever -- a farm resolved once (by
+  click or by answering an old ambiguous prompt) silently applied to all
+  future questions from anyone, and two tabs open at once bled into each
+  other's plant diagnosis and active domain.
+  Fix: new `SessionState` dataclass (current_domain, active_farm_index,
+  pending_weather_question, pending_farm_question) keyed by a `session_id`
+  UUID the frontend generates once per page load (`SESSION_ID =
+  crypto.randomUUID()`) and sends with every /chat and /voice call. A
+  reload is a new session on purpose, so the "which farm?" question now
+  re-asks at the start of each visit as long as 2+ farms exist and this
+  session hasn't resolved one yet. `_farm_state.set_active()` is still
+  called alongside purely for the sidebar's own "active" highlight, which
+  no longer feeds back into routing -- clicking a farm only changes what
+  the sidebar shows, matching the user's explicit "should be done by voice"
+  ask. Added `PlantAgent.abandon(session_id)` (already needed session_id
+  threading for `is_done`/`handle`, previously always defaulted to
+  `"default"`, meaning two tabs literally shared one diagnosis).
+  The ambiguous-farm question can now be answered by voice, not just by
+  tapping the picker: `pending_farm_question` holds (domain, original
+  question) until the farmer names a farm, matched by exact name, by a
+  loose in-sentence match ("it's about Farm 1", "the Colombo one" --
+  matches farm name or location as a whole word, only if exactly one farm
+  matches), or by the picker's structured `farm_name` field (unchanged).
+  An unrecognised reply re-asks rather than guessing or silently routing
+  it as an unrelated new question. Verified live: two concurrent session
+  IDs stay fully isolated (one resolves to Farm 1 and reuses it for a
+  follow-up with no re-ask, the other independently still ambiguous);
+  farewell and the existing mid-diagnosis weather-redirect fix both still
+  work per-session. Also fixed a real bug caught while touching this code:
+  one `_reply()` call site was missing the now-required `session_id` arg
+  (would have crashed on an empty message). A second, unrelated but real
+  bug turned up from an automated Playwright test of this exact flow: the
+  Send button's click listener was `addEventListener("click", sendMessage)`,
+  forwarding the click Event itself as sendMessage's first arg (its
+  overrideText param) -- /chat was receiving `{"text": {"isTrusted": true},
+  ...}` and 422ing. Only Enter-to-send (calls `sendMessage()` with no args)
+  ever actually worked; the Send button was silently broken for typed chat.
+  Fixed to `addEventListener("click", () => sendMessage())`.
 - **Adaptive plant doctor + ninth knowledge pass (2026-09-26).** User asked
   for up to 4-5 diagnostic questions, stopping early once the disease is
   clear, and for data beyond the five countries of the eighth pass.

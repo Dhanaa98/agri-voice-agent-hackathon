@@ -1287,6 +1287,14 @@
 </div>
 
 <script>
+// One per page load, sent with every /chat and /voice call so the server
+// can scope which farm/domain/plant-diagnosis this browser tab is on
+// (see SessionState in farmer_server.py). A reload is a NEW session on
+// purpose -- that's what makes the "which farm?" question ask again at
+// the start of each visit when there's more than one farm, instead of
+// silently reusing whatever farm anyone last picked.
+const SESSION_ID = crypto.randomUUID();
+
 const state = {
   // Which agent most recently answered -- purely informational now (used
   // for the redirect "Switched to X" notice and the location-modal
@@ -1570,7 +1578,7 @@ async function sendMessage(overrideText, farmName) {
   // Location is only ever meaningful to a weather-routed question, but the
   // farmer doesn't pick the domain anymore -- send it whenever the box has
   // a value and let the server ignore it for non-weather replies.
-  const payload = { text };
+  const payload = { text, session_id: SESSION_ID };
   const loc = els.locationBox.value.trim();
   if (loc) {
     payload.location = loc;
@@ -1816,7 +1824,15 @@ async function loadFarmState() {
   }
 }
 
-els.sendBtn.addEventListener("click", sendMessage);
+// REAL BUG FOUND AND FIXED (2026-09-27, caught by an automated browser
+// test of the session-scoped farm picker): passing sendMessage directly as
+// the listener means the click Event is forwarded as its first argument
+// (overrideText), which sendMessage then sends to the server AS the
+// message text instead of reading the actual typed value -- so /chat got
+// {"text": {"isTrusted": true}, ...} and 422'd. The Send button was
+// effectively broken for typed chat; only Enter-to-send (which calls
+// sendMessage() with no args) worked.
+els.sendBtn.addEventListener("click", () => sendMessage());
 els.talkBox.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -2007,7 +2023,7 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
   const { gate = null, idleTimeoutMs = 0 } = opts;
   return new Promise((resolve) => {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${proto}//${location.host}/voice`);
+    const socket = new WebSocket(`${proto}//${location.host}/voice?session_id=${encodeURIComponent(SESSION_ID)}`);
     voice.voiceSocket = socket;
     voice.streaming = true;
 

@@ -44,14 +44,29 @@ different regions), so farm selection happens on every fresh exchange
   - 1 farm -- used silently, never asked about.
   - 2+ farms -- resolved by an explicit `farm_name` in the request if given
     (e.g. a farmer says "how's the weather on my north field"), otherwise
-    the server asks which farm before calling any domain agent.
+    the server asks which farm before calling any domain agent, ONCE PER
+    BROWSER SESSION (see SessionState below) -- picking a farm by voice/chat
+    is the only thing that answers a question against it; clicking a farm
+    in the sidebar only changes which one the sidebar highlights/shows.
 See resolve_active_farm() below for the actual decision logic.
+
+Every browser tab gets its own SessionState (active domain lock, which farm
+this conversation resolved to, any pending location question), keyed by a
+client-generated session_id sent with every /chat and /voice call. Before
+this, all of that lived in module-level globals shared by every tab and
+every visit forever -- a farm selected by clicking, or resolved from a
+single ambiguous question days ago, silently applied to every later
+question from anyone, and two tabs open at once bled into each other's
+plant diagnosis and active domain. `FarmState.farms` itself (the actual
+saved farm data) stays global, as it should -- only the "which one is this
+conversation about" selection is now per-session.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
@@ -95,12 +110,58 @@ app = FastAPI(title="Farmer Dashboard")
 WAKEWORD_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/wakeword-models", StaticFiles(directory=str(WAKEWORD_MODELS_DIR)), name="wakeword-models")
 
-# Single-chat routing: which domain the last message was routed to, so a
-# message whose wording doesn't clearly point anywhere (see route_message)
-# stays on-topic instead of falling back to an arbitrary default. Starts on
-# "crop" -- picking what to plant is the most common zero-context question
-# a farmer opens with, and it needs no location/weather data to answer.
-_current_domain = "crop"
+@dataclass
+class SessionState:
+    """Everything about "who we're talking to and about what" that must be
+    scoped to ONE browser tab's conversation, not shared globally -- see
+    the module docstring. Looked up by session_id (a UUID the frontend
+    generates once per page load and sends with every request), created on
+    first use, and never persisted to disk: a reload is a new session on
+    purpose, which is what makes farm selection re-ask itself as designed.
+    """
+
+    # Which domain the last message in THIS session was routed to -- starts
+    # on "crop" since picking what to plant is the most common zero-context
+    # opener and needs no location/weather data to answer. Used the same way
+    # the old module-level _current_domain was: to keep a message with no
+    # clear keyword match on-topic, and to lock onto "plant" mid-diagnosis.
+    current_domain: str = "crop"
+    # Which farm THIS session has resolved its questions to, once resolved
+    # (via an unambiguous farm_name, or by answering the "which farm?"
+    # question) -- None until then, which is what makes the ambiguous-farm
+    # question fire again at the start of every new session.
+    active_farm_index: int | None = None
+    # The weather question being held while this session waits for a
+    # location reply (see _answer()'s pending-location branch).
+    pending_weather_question: str | None = None
+    # (domain, original question text) being held while this session waits
+    # to be told WHICH farm the question is about -- set whenever
+    # resolve_active_farm() returns ambiguous_farm_names, answered as soon
+    # as the farmer names one, by voice or by tapping the picker (which
+    # just resends the original text with farm_name set, bypassing this).
+    pending_farm_question: tuple[str, str] | None = None
+    # Per-session Plant diagnostic conversation -- PlantAgent's own
+    # _active_sessions dict is keyed by whatever session_id we pass it, so
+    # this just needs to consistently pass the SAME id for a given browser
+    # tab instead of every call defaulting to "default".
+    session_id: str = ""
+
+
+_sessions: dict[str, SessionState] = {}
+
+
+def _get_session(session_id: str | None) -> SessionState:
+    """Session state for one browser tab. A missing/empty id (a client that
+    predates this feature, or a direct API call) falls back to a single
+    shared "legacy" session -- old behavior, not a crash -- rather than a
+    fresh one per call, which would ask "which farm?" on every message."""
+    key = session_id or "_legacy"
+    session = _sessions.get(key)
+    if session is None:
+        session = SessionState(session_id=key)
+        _sessions[key] = session
+    return session
+
 
 _farm_state = FarmState.load(config.FARM_STATE_PATH)
 _agents: dict[str, object] = {}
@@ -111,18 +172,18 @@ for _name, _cls in DOMAIN_AGENTS.items():
         print(f"[farmer_server] '{_name}' domain agent unavailable: {exc}")
 
 
-def _domain_conversation_done(domain: str) -> bool:
+def _domain_conversation_done(domain: str, session_id: str) -> bool:
     """Mirrors main.py's VoiceAgentLoop._domain_conversation_done -- True
     once a multi-turn domain (Plant) has reached a final diagnosis for its
     current session, so the frontend knows whether to keep prompting for
     another follow-up answer or the exchange is complete."""
     agent = _agents.get(domain)
     if isinstance(agent, PlantAgent):
-        return agent.is_done()
+        return agent.is_done(session_id)
     return True
 
 
-def route_message(text: str, recent_turns: str = "") -> tuple[str | None, bool, bool]:
+def route_message(text: str, session: SessionState, recent_turns: str = "") -> tuple[str | None, bool, bool]:
     """Pick which domain this message belongs to. Returns (domain,
     is_fresh_exchange, switched); domain is None when the message is
     unclear and the farmer should be asked to repeat it.
@@ -143,22 +204,20 @@ def route_message(text: str, recent_turns: str = "") -> tuple[str | None, bool, 
     `switched` is True only when this message moved the chat to a
     different domain -- used for a small "switched to X" note in the UI.
     """
-    global _current_domain
-
-    mid_plant_conversation = _current_domain == "plant" and not _domain_conversation_done("plant")
+    mid_plant_conversation = session.current_domain == "plant" and not _domain_conversation_done("plant", session.session_id)
     if mid_plant_conversation:
         redirect = detect_domain(text)
         if redirect is None or redirect == "plant":
             return "plant", False, False
-        _agents["plant"].abandon()
-        _current_domain = redirect
+        _agents["plant"].abandon(session.session_id)
+        session.current_domain = redirect
         return redirect, True, True
 
     detected = detect_domain(text) or classify_with_llm(text, recent_turns)
     if detected is None:
         return None, True, False
-    previous = _current_domain
-    _current_domain = detected
+    previous = session.current_domain
+    session.current_domain = detected
     return detected, True, detected != previous
 
 
@@ -168,6 +227,24 @@ def _find_farm_by_name(name: str) -> int | None:
         if f.name.strip().lower() == lowered:
             return i
     return None
+
+
+def _find_farm_in_speech(text: str) -> int | None:
+    """Looser match for a farm name spoken/typed inside a full sentence
+    ("it's about Farm 1", "the Colombo one") rather than passed as the
+    exact structured farm_name field -- used only for answering the
+    "which farm?" question by voice. Matches the farm's own name OR its
+    location as a whole-word substring; if more than one farm matches
+    (e.g. two farms share a word in their name), treated as still
+    unresolved rather than guessing."""
+    lowered = text.lower()
+    matches = [
+        i
+        for i, f in enumerate(_farm_state.farms)
+        if (f.name and re.search(r"\b" + re.escape(f.name.strip().lower()) + r"\b", lowered))
+        or (f.location and re.search(r"\b" + re.escape(f.location.split(",")[0].strip().lower()) + r"\b", lowered))
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 # Reused (not recreated) across calls with zero farms / an unresolved
@@ -182,21 +259,28 @@ _scratch_farm = FarmProfile(name="", location_confirmed=False)
 
 
 def resolve_active_farm(
-    farm_name: str | None, location: str | None
+    session: SessionState, farm_name: str | None, location: str | None
 ) -> tuple[FarmProfile, bool, list[str] | None]:
-    """Decide which farm this exchange is about, per the module docstring's
-    rules. Returns (farm, is_ephemeral, ambiguous_farm_names).
+    """Decide which farm THIS SESSION's exchange is about, per the module
+    docstring's rules. Returns (farm, is_ephemeral, ambiguous_farm_names).
 
     `is_ephemeral` is True when the returned FarmProfile is a scratch
     object not stored in `_farm_state.farms` -- the zero-farms-yet case, so
     "what can I grow" works before any farm exists. `ambiguous_farm_names`
     is non-None only when there are 2+ farms and neither `farm_name` nor
-    the currently active farm disambiguates which one is meant; callers
-    must then skip calling any domain agent and ask the farmer to pick.
+    this session's own already-resolved farm disambiguates which one is
+    meant; callers must then skip calling any domain agent and ask the
+    farmer to pick. Once resolved, the choice is remembered on `session`
+    (not `_farm_state`) so it applies for the rest of this browser tab's
+    conversation but a NEW tab/session is asked again -- see the module
+    docstring. `_farm_state.set_active()` is still called alongside, purely
+    so the sidebar's own "active" highlight reflects the most recent
+    selection from any session; it never feeds back into routing.
     """
     if farm_name:
         idx = _find_farm_by_name(farm_name)
         if idx is not None:
+            session.active_farm_index = idx
             _farm_state.set_active(idx)
             return _farm_state.farms[idx], False, None
         # Named a farm that doesn't exist -- fall through to normal
@@ -208,21 +292,23 @@ def resolve_active_farm(
             # so the farmer is never asked to explicitly "create a farm" --
             # see the module docstring's auto-save rule.
             idx = _farm_state.add_farm("Farm 1", location=location, location_confirmed=True)
+            session.active_farm_index = idx
             return _farm_state.farms[idx], False, None
         # No farms, no location yet -- still usable anonymously (e.g. crop
         # suitability without weather), via a scratch, unsaved profile.
         return _scratch_farm, True, None
 
     if len(_farm_state.farms) == 1:
+        session.active_farm_index = 0
         _farm_state.set_active(0)
         return _farm_state.farms[0], False, None
 
-    # 2+ farms: an already-active selection from a prior turn still counts
-    # (so a farmer doesn't get re-asked every single message), but a fresh
-    # session with nothing active is genuinely ambiguous.
-    active = _farm_state.active_farm
-    if active is not None:
-        return active, False, None
+    # 2+ farms: this SESSION already resolving one earlier still counts (so
+    # a farmer doesn't get re-asked every single message within one visit),
+    # but a fresh session with nothing resolved yet is genuinely ambiguous.
+    idx = session.active_farm_index
+    if idx is not None and 0 <= idx < len(_farm_state.farms):
+        return _farm_state.farms[idx], False, None
 
     return _scratch_farm, True, [f.name for f in _farm_state.farms]
 
@@ -238,6 +324,10 @@ class ChatIn(BaseModel):
     # (e.g. picked from the farm-disambiguation prompt, or the Farms
     # section's selector). Also accepted as a spoken/typed farm name.
     farm_name: str | None = None
+    # A UUID this browser tab generated on page load -- see SessionState.
+    # Optional so old/direct API callers still work (falls back to a single
+    # shared legacy session, matching the pre-session-scoping behavior).
+    session_id: str | None = None
 
 
 class ChatOut(BaseModel):
@@ -480,9 +570,6 @@ def _is_farewell(text: str) -> bool:
         for phrase in _FAREWELL_PHRASES
     )
 
-# The weather question we're holding while waiting for the farmer to tell
-# us where their farm is -- answered as soon as they reply with a place.
-_pending_weather_question: str | None = None
 
 _LOCATION_REPLY_PREFIX = re.compile(
     r"^(?:(?:it'?s|it is|my farm is|the farm is|we'?re|we are|i'?m|i am)\s+)?(?:(?:in|at|near|around)\s+)?",
@@ -499,73 +586,123 @@ def _recent_turns(farm: FarmProfile, n: int = 4) -> str:
     return "\n".join(f"{t.role}: {t.text}" for t in farm.chat_history[-n:])
 
 
-def _reply(domain: str, response: str, farm: FarmProfile | None, text: str, **extra) -> dict:
+def _reply(domain: str, response: str, farm: FarmProfile | None, text: str, session_id: str, **extra) -> dict:
     if farm is not None:
         farm.add_chat_turn(domain=domain, role="farmer", text=text)
         farm.add_chat_turn(domain=domain, role="agent", text=response)
         _farm_state.save(config.FARM_STATE_PATH)
-    done = _domain_conversation_done(domain) if domain in MULTI_TURN_DOMAINS else True
+    done = _domain_conversation_done(domain, session_id) if domain in MULTI_TURN_DOMAINS else True
     return {"domain": domain, "response": response, "done": done, "farm_state": _farm_state.to_dict(), **extra}
 
 
-def _answer(text: str, location: str | None = None, farm_name: str | None = None, crop: str | None = None) -> dict:
+def _answer(
+    text: str,
+    location: str | None = None,
+    farm_name: str | None = None,
+    crop: str | None = None,
+    session_id: str | None = None,
+) -> dict:
     """Shared by typed /chat and the /voice WebSocket, so both behave the
     same: clarify instead of guessing, ask for a location before answering
     weather when none is known, and hand every agent the actual question."""
-    global _pending_weather_question
+    session = _get_session(session_id)
 
     text = (text or "").strip()
     if not text:
-        return _reply("general", CLARIFY_TEXT, None, text)
+        return _reply("general", CLARIFY_TEXT, None, text, session.session_id)
 
     # A farewell ends the conversation -- but not mid multi-turn Plant
     # diagnosis (a short answer like "that's it" could coincidentally match)
-    # and not while we're waiting on a location reply.
-    mid_plant_conversation = _current_domain == "plant" and not _domain_conversation_done("plant")
-    if _pending_weather_question is None and not mid_plant_conversation and _is_farewell(text):
-        return _reply("general", GOODBYE_TEXT, _farm_state.active_farm, text, end_conversation=True)
+    # and not while we're waiting on a location or farm-choice reply.
+    mid_plant_conversation = session.current_domain == "plant" and not _domain_conversation_done("plant", session.session_id)
+    awaiting_reply = session.pending_weather_question is not None or session.pending_farm_question is not None
+    if not awaiting_reply and not mid_plant_conversation and _is_farewell(text):
+        farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
+        return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
+
+    # The farmer is answering our "which farm is this about?" question --
+    # by voice or typed text, not just by tapping the picker (which instead
+    # resends the ORIGINAL question with farm_name set, bypassing this).
+    if session.pending_farm_question is not None:
+        idx = _find_farm_by_name(text) if farm_name is None else _find_farm_by_name(farm_name)
+        if idx is None:
+            idx = _find_farm_in_speech(text)
+        if idx is not None:
+            pending_domain, pending_text = session.pending_farm_question
+            session.pending_farm_question = None
+            session.active_farm_index = idx
+            _farm_state.set_active(idx)
+            farm = _farm_state.farms[idx]
+            agent = _agents.get(pending_domain)
+            try:
+                if pending_domain in MULTI_TURN_DOMAINS:
+                    response = agent.handle(farm, pending_text, crop=crop, session_id=session.session_id)
+                elif pending_domain == "weather":
+                    response = agent.handle(farm, location=location, question=pending_text)
+                else:
+                    response = agent.handle(farm, crop_name=crop, question=pending_text)
+            except Exception as exc:  # noqa: BLE001
+                response = f"Something went wrong handling that: {exc}"
+            return _reply(pending_domain, response, farm, pending_text, session.session_id)
+        # Didn't recognise a farm name in that reply -- ask again rather
+        # than silently guessing or falling through to normal routing
+        # (which would treat "the north one" as an unrelated new question).
+        names = ", ".join(f.name for f in _farm_state.farms)
+        return _reply(
+            "general",
+            f"Sorry, I didn't catch which farm. It's one of: {names}?",
+            None,
+            text,
+            session.session_id,
+        )
 
     # The farmer is answering our "which town is your farm in?" question --
     # unless they've clearly moved on to a crop or plant question instead.
-    if _pending_weather_question is not None and detect_domain(text) not in ("crop", "plant"):
-        pending = _pending_weather_question
+    if session.pending_weather_question is not None and detect_domain(text) not in ("crop", "plant"):
+        pending = session.pending_weather_question
         place = location or _location_from_reply(text)
-        farm, _, _ = resolve_active_farm(farm_name, place)
+        farm, _, _ = resolve_active_farm(session, farm_name, place)
         try:
             response = _agents["weather"].handle(farm, location=place, question=pending)
         except ValueError:
-            return _reply("weather", LOCATION_NOT_FOUND_TEXT, farm, text)
+            return _reply("weather", LOCATION_NOT_FOUND_TEXT, farm, text, session.session_id)
         except Exception as exc:  # noqa: BLE001
             response = f"Something went wrong checking the weather: {exc}"
-        _pending_weather_question = None
-        return _reply("weather", response, farm, text)
-    _pending_weather_question = None
+        session.pending_weather_question = None
+        return _reply("weather", response, farm, text, session.session_id)
+    session.pending_weather_question = None
 
-    context_farm = _farm_state.active_farm or _scratch_farm
-    domain, is_fresh_exchange, switched = route_message(text, _recent_turns(context_farm))
+    context_farm = (
+        _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else _scratch_farm
+    )
+    domain, is_fresh_exchange, switched = route_message(text, session, _recent_turns(context_farm))
     if domain is None:
-        return _reply("general", CLARIFY_TEXT, context_farm, text)
+        return _reply("general", CLARIFY_TEXT, context_farm, text, session.session_id)
 
     agent = _agents.get(domain)
     if agent is None:
-        return _reply(domain, f"The {domain} assistant isn't available right now.", None, text)
+        return _reply(domain, f"The {domain} assistant isn't available right now.", None, text, session.session_id)
 
     if is_fresh_exchange:
-        farm, _, ambiguous = resolve_active_farm(farm_name, location)
+        farm, _, ambiguous = resolve_active_farm(session, farm_name, location)
         if ambiguous is not None:
+            # Held so the farmer's NEXT reply (by voice or text, not just a
+            # picker tap) answers this instead of being routed as a new,
+            # unrelated question -- see the pending_farm_question check above.
+            session.pending_farm_question = (domain, text)
             response = "You have more than one farm -- which one is this about: " + ", ".join(ambiguous) + "?"
-            return _reply(domain, response, None, text, ambiguous_farms=ambiguous)
+            return _reply(domain, response, None, text, session.session_id, ambiguous_farms=ambiguous)
     else:
         # Mid multi-turn Plant diagnosis: keep the farm it started on.
-        farm, _, _ = resolve_active_farm(None, None)
+        farm, _, _ = resolve_active_farm(session, None, None)
 
     if domain == "weather" and not location and not farm.location_confirmed and not extract_location(text):
-        _pending_weather_question = text
-        return _reply(domain, ASK_LOCATION_TEXT, farm, text, switched=switched)
+        session.pending_weather_question = text
+        return _reply(domain, ASK_LOCATION_TEXT, farm, text, session.session_id, switched=switched)
 
     try:
         if domain in MULTI_TURN_DOMAINS:
-            response = agent.handle(farm, text, crop=crop)
+            response = agent.handle(farm, text, crop=crop, session_id=session.session_id)
         elif domain == "weather":
             response = agent.handle(farm, location=location, question=text)
         else:
@@ -573,24 +710,26 @@ def _answer(text: str, location: str | None = None, farm_name: str | None = None
     except Exception as exc:  # noqa: BLE001 -- surface the failure to the farmer, don't crash the server
         response = f"Something went wrong handling that: {exc}"
 
-    return _reply(domain, response, farm, text, switched=switched)
+    return _reply(domain, response, farm, text, session.session_id, switched=switched)
 
 
 @app.post("/chat", response_model=ChatOut)
 async def chat(body: ChatIn) -> ChatOut:
     """Typed-text path -- see _answer(). Runs in a worker thread because
     the agents make blocking HTTP/LLM calls."""
-    result = await asyncio.to_thread(_answer, body.text, body.location, body.farm_name, body.crop)
+    result = await asyncio.to_thread(_answer, body.text, body.location, body.farm_name, body.crop, body.session_id)
     return ChatOut(**result)
 
 
 @app.websocket("/voice")
-async def voice_session(websocket: WebSocket) -> None:
+async def voice_session(websocket: WebSocket, session_id: str | None = None) -> None:
     """Real-microphone path: browser streams raw 16-bit PCM audio frames
     over this socket, server feeds them to StreamingASR, and the final
     transcript is routed the same way as a typed /chat message once ASR
     reports end-of-turn -- see module docstring. UNVERIFIED end-to-end, no
-    AssemblyAI key configured in this project yet.
+    AssemblyAI key configured in this project yet. `session_id` (a query
+    param, e.g. /voice?session_id=...) scopes farm/domain/diagnosis state
+    to this browser tab -- see SessionState.
     """
     await websocket.accept()
 
@@ -602,7 +741,7 @@ async def voice_session(websocket: WebSocket) -> None:
     loop = asyncio.get_running_loop()
 
     def on_final_transcript(transcript: str) -> None:
-        asyncio.run_coroutine_threadsafe(_handle_voice_transcript(websocket, transcript), loop)
+        asyncio.run_coroutine_threadsafe(_handle_voice_transcript(websocket, transcript, session_id), loop)
 
     try:
         asr = StreamingASR(on_final_transcript=on_final_transcript)
@@ -634,8 +773,8 @@ async def voice_session(websocket: WebSocket) -> None:
         asr.disconnect()
 
 
-async def _handle_voice_transcript(websocket: WebSocket, transcript: str) -> None:
-    result = await asyncio.to_thread(_answer, transcript)
+async def _handle_voice_transcript(websocket: WebSocket, transcript: str, session_id: str | None) -> None:
+    result = await asyncio.to_thread(_answer, transcript, None, None, None, session_id)
     await websocket.send_json({"type": "result", "transcript": transcript, **result})
 
 

@@ -199,6 +199,46 @@ Running log of build progress for this project at
   correctly "unclear", generic clarify text; "what is crop rotation" now
   correctly -> crop, not plant; weather and crop routing re-tested
   unaffected by both changes.
+- **"Have to shout at it", "can you hear me" unanswered, and crop answers
+  not matching what was actually asked (2026-09-27).** Three more live
+  reports, all fixed together:
+  1. **Feels like shouting is needed.** `getMicStream()`'s `noiseSuppression:
+     true` constraint -- aggressive on many browsers/devices (especially
+     mobile Chrome), known to treat ordinary conversational-volume speech
+     as background noise and attenuate it, not just true background noise.
+     Turned off (kept `echoCancellation`/`autoGainControl`, neither of
+     which has this failure mode). Also added a manual `PCM_GAIN` (2.2x)
+     boost applied to every mic sample in `floatTo16kPcm()`, clamped to
+     [-1, 1] as before, for extra headroom on quiet mics/speakers beyond
+     what `autoGainControl` alone provides.
+  2. **"can you hear me" -> "sorry, I didn't catch that".** Not a farming
+     question, so `detect_domain()` has no keyword and `classify_with_llm()`
+     correctly calls it "unclear" -- technically right, but useless to a
+     farmer reasonably checking the mic works. Added `_is_mic_check()`
+     (farmer_server.py), same fixed-phrase-list approach as the existing
+     `_is_farewell()`, checked right after it -- deliberately does NOT
+     clear any `pending_*` state (unlike farewell), so asking "can you
+     hear me" mid-way through a real pending question doesn't lose that
+     progress.
+  3. **"Explain to me how I can grow rice" answered with a suitability
+     verdict and unprompted fungal-disease warnings** instead of actual
+     growing steps. `CropAgent.handle()`'s prompt always fed the full
+     assessment (including `disease_warnings`) to the LLM and just said
+     "answer exactly what they asked" -- with that data sitting right
+     there, the model kept volunteering it regardless of whether the
+     question was "how do I grow X" (method) or "should I grow X"
+     (verdict). Added `is_how_to_question()` (crop.py) detecting
+     how-to/explain/steps/guide phrasing, and a separate prompt branch for
+     that case: the assessment is passed as background context only, with
+     an explicit instruction not to lead with a suitability verdict or
+     list disease warnings unless actually asked about suitability/
+     problems.
+  Verified end-to-end: "can you hear me" -> direct confirmation; "explain
+  how I can grow rice" -> actual growing steps (paddy prep, nursery,
+  transplant spacing, flooding, weeding), no unprompted warnings; "is rice
+  suitable for my farm" (unchanged prompt path) -> still correctly gives a
+  suitability verdict. Mic gain/noise-suppression change is browser-side
+  and needs live-device re-testing after deploy (can't be curl-tested).
 - **Mic-permission delay on mobile (2026-09-27).** Reported live: slow/
   seemingly-broken mic permission prompt on mobile. Root cause:
   startWakewordListening() loaded the entire wakeword pipeline (WASM

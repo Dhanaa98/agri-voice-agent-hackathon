@@ -29,6 +29,27 @@ _CROP_NAME_ALIASES = {
 }
 
 
+# REAL BUG FOUND AND FIXED (2026-09-27, reported live: "explain to me how
+# I can grow rice" answered with a suitability verdict and unprompted
+# fungal-disease warnings instead of growing steps). The prompt always fed
+# the full assessment (including disease_warnings) to the LLM and just
+# said "answer exactly what they asked" -- with that data sitting right
+# there, the model kept volunteering it regardless of whether the farmer
+# asked a "how do I grow it" method question or a "should I grow it/is it
+# suitable" verdict question. Detecting the phrasing lets the prompt
+# actually tell the model which one this is, instead of leaving it to
+# infer that from instructions alone.
+_HOW_TO_RE = re.compile(
+    r"\b(?:how (?:do|can|would|should) i|how to|explain|steps? (?:to|for)|guide (?:to|for)|"
+    r"teach me|walk me through)\b",
+    re.IGNORECASE,
+)
+
+
+def is_how_to_question(question: str | None) -> bool:
+    return bool(_HOW_TO_RE.search(question or ""))
+
+
 def mentioned_crops(question: str | None) -> list[str]:
     """Crop names from CROPS (or their common alternative names) that
     appear as whole words in the question, plurals too, longest names
@@ -153,17 +174,37 @@ class CropAgent:
 
         deterministic_summary = "\n".join(summary_lines)
 
-        prompt = (
-            "Answer the farmer's question in 2-4 short spoken sentences. Answer exactly what "
-            "they asked. Suitability verdicts and anything about THIS farm's conditions must "
-            "come only from the assessment and farm context below. If the question goes beyond "
-            "them (watering, spacing, fertiliser, timing), you may add brief, widely accepted "
-            "general guidance, but never invent numbers or facts about this farm.\n\n"
-            f"Farmer's question: {question or 'What should I plant?'}\n\n"
-            f"Farm context:\n{farm.to_prompt_context()}\n\n"
-            f"{farm.recent_chat_context('crop')}\n\n"
-            f"Assessment:\n{deterministic_summary}"
-        )
+        if is_how_to_question(question):
+            # "how do I grow rice" wants growing steps, not a suitability
+            # verdict -- the assessment is passed as background only (so a
+            # genuinely serious warning can still be mentioned briefly if
+            # truly relevant), with an explicit instruction not to lead
+            # with or default to it, unlike the suitability-question
+            # prompt below where the assessment IS the answer.
+            prompt = (
+                "Answer the farmer's HOW-TO question in 3-5 short spoken sentences: the "
+                "practical steps to grow this crop (soil prep, spacing, watering, timing, "
+                "care), using general widely-accepted growing knowledge. The assessment below "
+                "is background only -- do NOT lead with a suitability verdict or list disease "
+                "warnings unless the farmer actually asked about suitability or problems. "
+                "Never invent specific numbers or facts about this farm beyond what's given.\n\n"
+                f"Farmer's question: {question}\n\n"
+                f"Farm context:\n{farm.to_prompt_context()}\n\n"
+                f"{farm.recent_chat_context('crop')}\n\n"
+                f"Background assessment (for context only, not the answer):\n{deterministic_summary}"
+            )
+        else:
+            prompt = (
+                "Answer the farmer's question in 2-4 short spoken sentences. Answer exactly what "
+                "they asked. Suitability verdicts and anything about THIS farm's conditions must "
+                "come only from the assessment and farm context below. If the question goes beyond "
+                "them (watering, spacing, fertiliser, timing), you may add brief, widely accepted "
+                "general guidance, but never invent numbers or facts about this farm.\n\n"
+                f"Farmer's question: {question or 'What should I plant?'}\n\n"
+                f"Farm context:\n{farm.to_prompt_context()}\n\n"
+                f"{farm.recent_chat_context('crop')}\n\n"
+                f"Assessment:\n{deterministic_summary}"
+            )
         try:
             return llm_client.generate(prompt)
         except RuntimeError:

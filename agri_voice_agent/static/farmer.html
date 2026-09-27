@@ -1926,6 +1926,13 @@ els.talkBox.addEventListener("input", () => {
 // ============================================================
 
 const PCM_SAMPLE_RATE = 16000;
+// Manual gain applied to mic samples before they're sent to AssemblyAI --
+// see getMicStream()'s noiseSuppression comment. autoGainControl alone
+// doesn't always bring a quiet mic/quiet speaker up to a level ASR
+// transcribes reliably; this adds real headroom on top of it. 2.2x chosen
+// conservatively (leaves clipping room for a farmer who then speaks loud)
+// -- clamped to [-1, 1] in floatTo16kPcm() regardless.
+const PCM_GAIN = 2.2;
 
 // Spoken the instant a wakeword fires, while the server's AssemblyAI
 // handshake (several seconds, see docs/build_log.md) runs in parallel --
@@ -2077,7 +2084,7 @@ function floatTo16kPcm(float32, inputSampleRate) {
     const frac = srcPos - srcIndex;
     const s0 = float32[srcIndex] || 0;
     const s1 = float32[srcIndex + 1] !== undefined ? float32[srcIndex + 1] : s0;
-    let sample = Math.max(-1, Math.min(1, s0 + (s1 - s0) * frac));
+    let sample = Math.max(-1, Math.min(1, (s0 + (s1 - s0) * frac) * PCM_GAIN));
     sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
     view.setInt16(i * 2, sample, true);  // little-endian, matches Encoding.pcm_s16le
   }
@@ -2087,7 +2094,18 @@ function floatTo16kPcm(float32, inputSampleRate) {
 async function getMicStream() {
   if (voice.micStream) return voice.micStream;
   voice.micStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    // REAL BUG FOUND AND FIXED (2026-09-27, reported live: "feels like I
+    // have to shout at it"): noiseSuppression on many browsers/devices
+    // (especially mobile Chrome) is aggressive enough to treat ordinary
+    // conversational-volume speech as background noise and attenuate it,
+    // not just true background noise -- a well-known failure mode, and a
+    // much more likely explanation than AssemblyAI's own endpointing
+    // (which is amplitude-tolerant by design). Turned off; echoCancellation
+    // and autoGainControl stay on since neither has this failure mode and
+    // autoGainControl actively helps quiet speech. See PCM_GAIN below for
+    // the manual boost that replaces what noiseSuppression's side effect
+    // used to accidentally correct for on some devices.
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: true },
   });
   return voice.micStream;
 }

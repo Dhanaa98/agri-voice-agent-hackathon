@@ -695,6 +695,29 @@ def _is_farewell(text: str) -> bool:
     )
 
 
+# A mic-check, not a farming question -- REAL BUG FOUND AND FIXED
+# (2026-09-27, reported live: "can you hear me" got "sorry, I didn't catch
+# that"). Not a farming question, so detect_domain() has no keyword for it
+# and classify_with_llm() correctly calls it "unclear" -- technically right,
+# but useless to a farmer who's reasonably checking the mic is working, not
+# asking to repeat themselves. Same "fixed phrase list, not an LLM call"
+# approach as _is_farewell() above -- this is easy to recognise outright.
+MIC_CHECK_TEXT = "Yes, I can hear you! What would you like to know?"
+_MIC_CHECK_PHRASES = (
+    "can you hear me", "can u hear me", "do you hear me", "are you there",
+    "are you listening", "is this working", "testing", "test test",
+    "hello are you there", "you there",
+)
+
+
+def _is_mic_check(text: str) -> bool:
+    lowered = text.lower().strip(" .!?")
+    return lowered in _MIC_CHECK_PHRASES or any(
+        lowered == phrase or lowered.startswith(phrase + " ") or lowered.endswith(" " + phrase)
+        for phrase in _MIC_CHECK_PHRASES
+    )
+
+
 _LOCATION_REPLY_PREFIX = re.compile(
     r"^(?:(?:it'?s|it is|my farm is|the farm is|we'?re|we are|i'?m|i am)\s+)?(?:(?:in|at|near|around)\s+)?",
     re.IGNORECASE,
@@ -1082,6 +1105,15 @@ def _answer(
         session.pending_new_farm_location = None
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
+
+    # A mic check, not a real question -- deliberately does NOT clear any
+    # pending_* state (unlike farewell above): "can you hear me" asked
+    # mid-way through answering a real pending question shouldn't reset
+    # that progress, just answer the mic check and leave the pending
+    # question to be answered next turn.
+    if not mid_plant_conversation and _is_mic_check(text):
+        farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
+        return _reply("general", MIC_CHECK_TEXT, farm, text, session.session_id)
 
     # The farmer is answering "what town or area is it in?" for a farm they
     # JUST created -- takes priority over everything below (including farm

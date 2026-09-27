@@ -239,6 +239,41 @@ Running log of build progress for this project at
   suitable for my farm" (unchanged prompt path) -> still correctly gives a
   suitability verdict. Mic gain/noise-suppression change is browser-side
   and needs live-device re-testing after deploy (can't be curl-tested).
+- **Context-aware interpreter replaces "didn't catch that" (2026-09-27).**
+  Reported live: "let's focus on the farm in Zurich" (ASR: "Surich"), a
+  garbled "focus on the format", and farm-creation requests all got
+  "Sorry, I didn't catch that", and the assistant stopped responding after
+  a few exchanges. Four causes, all fixed:
+  1. No keyword match meant a one-word LLM classifier with no way to act
+     on anything but a domain label. Replaced by `interpreter.py`: one
+     JSON-mode Gemini call that sees the farm list, the farm in focus and
+     the last 10 turns, and returns an action: route to weather/crop/plant
+     (with the question rewritten to stand alone, e.g. "and tomorrow?"),
+     select a farm, add a farm, answer directly, or ask a specific
+     clarifying question. Delete/rename/relocate stay regex-only, so a
+     misread can't destroy data. `domains/general.py` and
+     `classify_with_llm()` were removed; the interpreter's "answer" action
+     covers them with conversation context they never had.
+  2. Context was being lost: `_reply()` only recorded turns when a farm
+     was attached, so farm-list answers and clarifications never entered
+     history. Added `SessionState.history`, recorded on every reply.
+  3. A started plant diagnosis locked every later message without a
+     weather/crop keyword to the plant agent, so "add a farm" was
+     swallowed as a symptom answer. Farm commands are now checked
+     mid-diagnosis too (abandoning the diagnosis when one matches).
+  4. The Gemini client had no timeout; a stalled response (reproduced
+     live) held the request open forever, so the assistant went silent.
+     Added a 20s timeout that degrades to the usual fallback text.
+  Also found while testing: the rewritten question "forecast for Alpine
+  tomorrow" made the weather agent geocode the farm NAME "Alpine" as a
+  place, which resolved to Texas (31C reported for a Zurich farm). A farm
+  name appearing as a place is now swapped for that farm's location.
+  Verified live: the screenshot conversation now switches to the Zurich
+  farm; "and what's it like there tomorrow?" returns Zurich (CH) weather
+  saved on that farm; "I also have a new farm in Galle" and "can I add
+  another farm for me in Kandy" create farms with default names; "why did
+  you pick that one?" is answered from the conversation; "add a farm"
+  mid-diagnosis works.
 - **Mic-permission delay on mobile (2026-09-27).** Reported live: slow/
   seemingly-broken mic permission prompt on mobile. Root cause:
   startWakewordListening() loaded the entire wakeword pipeline (WASM

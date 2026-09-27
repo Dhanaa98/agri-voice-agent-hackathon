@@ -67,7 +67,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
@@ -79,12 +79,12 @@ from pydantic import BaseModel
 from . import config
 from .asr import StreamingASR
 from .domains.crop import CropAgent
-from .domains.general import GeneralAgent
 from .domains.plant import PlantAgent
 from .domains.weather import WeatherAgent
 from .farm_state import LEGACY_FARMER_KEY, FarmProfile, FarmState, FarmStore
 from .domains.weather import extract_location
-from .intent import classify_with_llm, detect_domain
+from .intent import detect_domain
+from .interpreter import interpret
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 WAKEWORD_MODELS_DIR = config.WAKEWORD_MODELS_DIR
@@ -93,12 +93,6 @@ DOMAIN_AGENTS = {
     "weather": WeatherAgent,
     "crop": CropAgent,
     "plant": PlantAgent,
-    # Not a keyword/wakeword domain -- only ever reached via
-    # classify_with_llm() returning "general" (see intent.py) for a
-    # genuine farming question outside the other three. No deterministic
-    # data behind it, so location isn't gated for it the way weather/crop
-    # are below.
-    "general": GeneralAgent,
 }
 
 # Same distinction as main.py: Plant holds a multi-turn session (up to 2
@@ -173,6 +167,11 @@ class SessionState:
     # this just needs to consistently pass the SAME id for a given browser
     # tab instead of every call defaulting to "default".
     session_id: str = ""
+    # Every exchange in this tab, as (role, text) -- including replies with
+    # no farm attached (farm-list answers, clarifications), which the
+    # per-farm chat_history never recorded. That gap is why follow-ups lost
+    # their context after a few turns; this is what interpret() reads.
+    history: list[tuple[str, str]] = field(default_factory=list)
 
 
 _sessions: dict[str, SessionState] = {}
@@ -262,7 +261,7 @@ def _domain_conversation_done(domain: str, session_id: str) -> bool:
     return True
 
 
-def route_message(text: str, session: SessionState, recent_turns: str = "") -> tuple[str | None, bool, bool]:
+def route_message(text: str, session: SessionState) -> tuple[str | None, bool, bool]:
     """Pick which domain this message belongs to. Returns (domain,
     is_fresh_exchange, switched); domain is None when the message is
     unclear and the farmer should be asked to repeat it.
@@ -275,9 +274,9 @@ def route_message(text: str, session: SessionState, recent_turns: str = "") -> t
     though -- abandoning the plant session -- since that's a genuine topic
     change, not a follow-up answer; only a message with no clear keyword
     match (which is what a real follow-up answer looks like) stays locked
-    to plant. Otherwise keywords decide, then the LLM classifier with the
-    recent turns as context. There is deliberately no fallback to the
-    previously active domain: that used to answer garbled or echoed
+    to plant. Otherwise keywords decide; no match returns None and the
+    caller falls back to interpret(). There is deliberately no fallback to
+    the previously active domain: that used to answer garbled or echoed
     transcripts ("How can I help you today.") with a weather report.
 
     `switched` is True only when this message moved the chat to a
@@ -292,7 +291,9 @@ def route_message(text: str, session: SessionState, recent_turns: str = "") -> t
         session.current_domain = redirect
         return redirect, True, True
 
-    detected = detect_domain(text) or classify_with_llm(text, recent_turns)
+    # No keyword match -> None, and _answer() hands the message to
+    # interpret() with the conversation as context.
+    detected = detect_domain(text)
     if detected is None:
         return None, True, False
     previous = session.current_domain
@@ -698,7 +699,7 @@ def _is_farewell(text: str) -> bool:
 # A mic-check, not a farming question -- REAL BUG FOUND AND FIXED
 # (2026-09-27, reported live: "can you hear me" got "sorry, I didn't catch
 # that"). Not a farming question, so detect_domain() has no keyword for it
-# and classify_with_llm() correctly calls it "unclear" -- technically right,
+# and an LLM reading it would rightly call it unclear -- technically right,
 # but useless to a farmer who's reasonably checking the mic is working, not
 # asking to repeat themselves. Same "fixed phrase list, not an LLM call"
 # approach as _is_farewell() above -- this is easy to recognise outright.
@@ -909,7 +910,33 @@ def _resolve_farm_reference(session: SessionState, name: str) -> int | None:
     return session.active_farm_index
 
 
-def _handle_farm_management(text: str, session: SessionState) -> dict | None:
+def _add_farm_reply(name: str, location: str, text: str, session: SessionState) -> dict:
+    """Shared by the add-farm regex and interpret()'s add_farm action."""
+    name = name or f"Farm {len(_farm_state.farms) + 1}"
+    idx = _farm_state.add_farm(name, location=location, location_confirmed=bool(location))
+    session.active_farm_index = idx
+    _farm_store.save(config.FARM_STATE_PATH)
+    if location:
+        response = f"Added {name}, set to {location}."
+    else:
+        # Without this pending marker the farmer's next reply (the place
+        # name) was routed as a weather question and answered with a
+        # forecast instead of being saved to the new farm.
+        session.pending_new_farm_location = idx
+        response = f"Added {name}. What town or area is it in?"
+    return _reply("general", response, _farm_state.farms[idx], text, session.session_id)
+
+
+def _select_farm_reply(idx: int, text: str, session: SessionState) -> dict:
+    session.active_farm_index = idx
+    _farm_state.set_active(idx)
+    _farm_store.save(config.FARM_STATE_PATH)
+    farm = _farm_state.farms[idx]
+    where = f" in {farm.location}" if farm.location else ""
+    return _reply("general", f"Okay, we're on {farm.name}{where} now. What would you like to know?", farm, text, session.session_id)
+
+
+def _handle_farm_management(text: str, session: SessionState, mid_plant: bool = False) -> dict | None:
     """Deterministic add/rename/relocate/delete/list commands -- returns a
     reply dict if `text` matched one, else None (falls through to normal
     domain routing). Checked before the pending-location/farewell/domain
@@ -952,27 +979,7 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
 
     add_match = _match_add_farm(stripped)
     if add_match is not None:
-        name, location = add_match
-        name = name or f"Farm {len(_farm_state.farms) + 1}"
-        idx = _farm_state.add_farm(name, location=location, location_confirmed=bool(location))
-        session.active_farm_index = idx
-        _farm_store.save(config.FARM_STATE_PATH)
-        if location:
-            response = f"Added {name}, set to {location}."
-        else:
-            # REAL BUG FOUND AND FIXED (2026-09-27, reported live: giving a
-            # location after struggling to say it a few times got answered
-            # with a climate forecast instead of actually setting it): this
-            # follow-up question used to set no pending state at all, so
-            # the farmer's next reply had nothing to anchor it and fell
-            # through to normal domain routing, which read a place name as
-            # a WEATHER question's location and answered with a forecast
-            # instead of saving it to the farm. pending_new_farm_location
-            # now holds which farm is waiting, so the very next reply --
-            # however many attempts it takes -- is applied to it directly.
-            session.pending_new_farm_location = idx
-            response = f"Added {name}. What town or area is it in?"
-        return _reply("general", response, _farm_state.farms[idx], text, session.session_id)
+        return _add_farm_reply(*add_match, text, session)
 
     delete_name = _match_delete_farm(stripped)
     if delete_name is not None:
@@ -1039,7 +1046,7 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
     # message is basically JUST a farm name (nothing else going on) so an
     # ordinary sentence that happens to mention a farm ("how's farm 1
     # doing") isn't hijacked into this.
-    if len(stripped.split()) <= 4:
+    if not mid_plant and len(stripped.split()) <= 4:
         idx = _find_farm_by_name(stripped)
         if idx is not None:
             farm = _farm_state.farms[idx]
@@ -1055,11 +1062,11 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
     return None
 
 
-def _recent_turns(farm: FarmProfile, n: int = 4) -> str:
-    return "\n".join(f"{t.role}: {t.text}" for t in farm.chat_history[-n:])
-
-
 def _reply(domain: str, response: str, farm: FarmProfile | None, text: str, session_id: str, **extra) -> dict:
+    session = _sessions.get(session_id)
+    if session is not None:
+        session.history.extend([("farmer", text), ("assistant", response)])
+        del session.history[:-20]
     if farm is not None:
         farm.add_chat_turn(domain=domain, role="farmer", text=text)
         farm.add_chat_turn(domain=domain, role="agent", text=response)
@@ -1111,7 +1118,7 @@ def _answer(
     # mid-way through answering a real pending question shouldn't reset
     # that progress, just answer the mic check and leave the pending
     # question to be answered next turn.
-    if not mid_plant_conversation and _is_mic_check(text):
+    if _is_mic_check(text):
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", MIC_CHECK_TEXT, farm, text, session.session_id)
 
@@ -1177,10 +1184,17 @@ def _answer(
     # branches, since these commands are about the farm LIST, not a
     # question for any domain agent. Also handles a pending "delete FARM?
     # yes/no" reply.
-    if not mid_plant_conversation:
-        managed = _handle_farm_management(text, session)
-        if managed is not None:
-            return managed
+    # Checked even mid plant diagnosis: that lock used to swallow "add a
+    # farm" and every other command as a symptom answer until the
+    # diagnosis finished. These regexes need an explicit command verb, so a
+    # real symptom answer won't match them (the bare-farm-name fallback,
+    # which could, is skipped via mid_plant).
+    managed = _handle_farm_management(text, session, mid_plant=mid_plant_conversation)
+    if managed is not None:
+        if mid_plant_conversation:
+            _agents["plant"].abandon(session.session_id)
+            session.current_domain = "general"
+        return managed
 
     # The farmer is answering our "which farm is this about?" question --
     # by voice or typed text, not just by tapping the picker (which instead
@@ -1201,8 +1215,6 @@ def _answer(
                     response = agent.handle(farm, pending_text, crop=crop, session_id=session.session_id)
                 elif pending_domain == "weather":
                     response = agent.handle(farm, location=location, question=pending_text)
-                elif pending_domain == "general":
-                    response = agent.handle(farm, question=pending_text)
                 else:
                     response = agent.handle(farm, crop_name=crop, question=pending_text)
             except Exception as exc:  # noqa: BLE001
@@ -1265,18 +1277,68 @@ def _answer(
             )
     session.pending_location_question = None
 
-    context_farm = (
-        _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else _scratch_farm
-    )
-    domain, is_fresh_exchange, switched = route_message(text, session, _recent_turns(context_farm))
+    domain, is_fresh_exchange, switched = route_message(text, session)
     if domain is None:
-        return _reply("general", CLARIFY_TEXT, context_farm, text, session.session_id)
+        # No keyword matched. This used to be a hard "Sorry, I didn't catch
+        # that" -- reported live for "let's focus on the farm in Zurich" and
+        # context-dependent follow-ups. interpret() reads the conversation
+        # and farm list and decides what was meant.
+        try:
+            result = interpret(
+                text,
+                session.history,
+                [(f.name, f.location) for f in _farm_state.farms],
+                _farm_state.farms[session.active_farm_index].name if session.active_farm_index is not None else None,
+            )
+        except RuntimeError:
+            return _reply("general", CLARIFY_TEXT, None, text, session.session_id)
+        action = result.get("action")
+        if action == "select_farm":
+            idx = _find_farm_by_name(str(result.get("farm") or ""))
+            if idx is not None:
+                return _select_farm_reply(idx, text, session)
+            names = ", ".join(f"{f.name} ({f.location})" if f.location else f.name for f in _farm_state.farms)
+            return _reply("general", f"Which farm do you mean? You have: {names or 'no farms yet'}.", None, text, session.session_id)
+        if action == "add_farm":
+            name = _clean_farm_phrase(str(result.get("name") or ""))
+            new_location = _clean_farm_phrase(str(result.get("location") or ""))
+            # The model sometimes fills in a name the farmer never gave
+            # ("Galle" for "a new farm in Galle", or "New Farm").
+            if name.lower() in (new_location.lower(), "new farm", "farm", "another farm"):
+                name = ""
+            return _add_farm_reply(name, new_location, text, session)
+        if action in ("answer", "unclear"):
+            reply = str(result.get("reply") or "").strip() or CLARIFY_TEXT
+            return _reply("general", reply, None, text, session.session_id)
+        domain = action
+        if result.get("question"):
+            text = str(result["question"])
+        if result.get("farm"):
+            farm_name = str(result["farm"])
+        is_fresh_exchange = True
+        switched = domain != session.current_domain
+        session.current_domain = domain
 
     agent = _agents.get(domain)
     if agent is None:
         return _reply(domain, f"The {domain} assistant isn't available right now.", None, text, session.session_id)
 
     if is_fresh_exchange:
+        # "what's the weather at the Zurich farm" -- a farm named in the
+        # sentence itself shouldn't trigger the "which farm?" question.
+        if farm_name is None and len(_farm_state.farms) > 1:
+            idx = _find_farm_in_speech(text)
+            if idx is not None:
+                farm_name = _farm_state.farms[idx].name
+        # "weather at Alpine tomorrow", where Alpine is the farm's NAME: the
+        # weather agent reads "at <Capitalized>" as a one-off place, and
+        # "Alpine" geocoded to a town in Texas (seen live: Texas weather
+        # reported for a farm in Zurich). Swap a farm name for its location.
+        named = extract_location(text)
+        idx = _find_farm_by_name(named) if named else None
+        if idx is not None:
+            farm_name = farm_name or _farm_state.farms[idx].name
+            text = text.replace(named, _farm_state.farms[idx].location or "my farm")
         farm, _, ambiguous = resolve_active_farm(session, farm_name, location)
         if ambiguous is not None:
             # Held so the farmer's NEXT reply (by voice or text, not just a
@@ -1307,8 +1369,6 @@ def _answer(
             response = agent.handle(farm, text, crop=crop, session_id=session.session_id)
         elif domain == "weather":
             response = agent.handle(farm, location=location, question=text)
-        elif domain == "general":
-            response = agent.handle(farm, question=text)
         else:
             response = agent.handle(farm, crop_name=crop, question=text)
     except Exception as exc:  # noqa: BLE001 -- surface the failure to the farmer, don't crash the server

@@ -20,12 +20,9 @@ conversation shape -- multi-turn diagnosis needs a symptom description,
 not a one-shot question -- so it was kept apart rather than folded in
 too).
 
-Keyword matching is the first and fast path. Only when no keyword matches
-does classify_with_llm() ask the model for a single constrained label
-(weather / crop / plant / unclear), given the last few turns so follow-ups
-like "and tomorrow?" still land correctly. "unclear" -- or no model
-available -- means the caller asks the farmer to repeat instead of guessing
-a domain. Only ever suggests a redirect; the caller decides whether to act on
+Keyword matching is the fast path. A message no keyword matches returns
+None here; farmer_server.py then hands it to interpreter.py, which reads
+the conversation for context. Only ever suggests a redirect; the caller decides whether to act on
 it, and it must never fire mid-conversation (see farmer_server.py's
 guard against running this on a Plant follow-up answer, where a farmer's
 short reply like "the whole plant" carries none of these keywords anyway
@@ -35,10 +32,6 @@ but could coincidentally overlap one in principle).
 from __future__ import annotations
 
 import re
-
-from . import llm_client
-
-_CLASSIFIER_SYSTEM = "You are a strict text classifier. Reply with exactly one lowercase word and nothing else."
 
 # Checked in dict order, first match wins -- most specific domain first.
 # Symptom words are unambiguous, and crop questions routinely mention
@@ -95,45 +88,6 @@ def detect_domain(text: str) -> str | None:
             if re.search(r"\b" + re.escape(keyword) + r"\b", lowered):
                 return domain
     return None
-
-
-def classify_with_llm(text: str, recent_turns: str = "") -> str | None:
-    """Fallback for messages no keyword matched. Returns "weather", "crop",
-    "plant", "general", or None when the message is truly unclear (cut off,
-    garbled, the assistant's own words echoed back) or no model is
-    available -- the caller should then ask the farmer to repeat.
-
-    "general" (added 2026-09-27, in response to a live report: a farming
-    question outside all three specialists -- "how often should I water
-    tomatoes", "what's crop rotation" -- used to have nowhere to land here
-    but "unclear", so it fell straight to the generic "sorry, I didn't
-    catch that" instead of actually being answerable. Routes to
-    domains/general.py's GeneralAgent -- the one deliberate exception to
-    this project's "deterministic logic, LLM only phrases" rule, since an
-    open-ended farming question has no fixed dataset to phrase from.
-    "unclear" is reserved for messages that aren't a real farming question
-    at all, not ones that are just outside these four."""
-    context = f"Recent conversation:\n{recent_turns}\n\n" if recent_turns else ""
-    prompt = (
-        "A farm voice assistant has four specialists:\n"
-        "weather - weather conditions or forecasts: rain, temperature, wind, humidity, any day\n"
-        "crop - what to plant or grow, crop suitability, planting or harvest timing, "
-        "general crop care like watering, spacing or fertiliser\n"
-        "plant - a sick or damaged plant: symptoms, pests, diseases\n"
-        "general - any other genuine farming question that isn't specifically about "
-        "current/forecast weather, which crop to grow, or a sick plant\n\n"
-        "Classify the farmer's latest message. Use the recent conversation to understand "
-        "short follow-ups like 'and tomorrow?'. Answer unclear if the message is cut off, "
-        "garbled, not a farming question at all, or sounds like the assistant talking.\n\n"
-        f"{context}Latest message: \"{text}\"\n\n"
-        "Answer with one word: weather, crop, plant, general, or unclear."
-    )
-    try:
-        raw = llm_client.generate(prompt, system_instruction=_CLASSIFIER_SYSTEM)
-    except RuntimeError:
-        return None
-    word = re.sub(r"[^a-z]", "", raw.strip().lower().split()[0]) if raw.strip() else ""
-    return word if word in ("weather", "crop", "plant", "general") else None
 
 
 def suggest_redirect(text: str, active_domain: str) -> str | None:

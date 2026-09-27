@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import time
 
+import httpx
 from google import genai
 from google.genai import errors, types
 
 from . import config
 
 _client: genai.Client | None = None
+
+REQUEST_TIMEOUT_MS = 20_000
 
 # Shared default tone across every domain agent's LLM call, so "natural"
 # doesn't mean re-writing the same tone instructions in every prompt string
@@ -42,7 +45,12 @@ def _get_client() -> genai.Client:
     if _client is None:
         if not config.GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY is not set. Copy .env.example to .env and fill it in.")
-        _client = genai.Client(api_key=config.GEMINI_API_KEY)
+        # No timeout by default: a stalled Gemini response (seen live) held
+        # the request open indefinitely, so the assistant just went silent.
+        _client = genai.Client(
+            api_key=config.GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
+        )
     return _client
 
 
@@ -50,6 +58,7 @@ def generate(
     prompt: str,
     system_instruction: str | None = DEFAULT_SYSTEM_INSTRUCTION,
     model: str = "gemini-flash-lite-latest",
+    json_mode: bool = False,
 ) -> str:
     """Single-turn generation. Returns plain text.
 
@@ -69,6 +78,8 @@ def generate(
     """
     client = _get_client()
     config_kwargs = {"system_instruction": system_instruction} if system_instruction else {}
+    if json_mode:
+        config_kwargs["response_mime_type"] = "application/json"
     try:
         try:
             response = client.models.generate_content(
@@ -95,7 +106,7 @@ def generate(
         # temporary Gemini outage degrades to that same safe fallback
         # instead of surfacing a raw API error/stack trace to the farmer.
         raise RuntimeError(f"Gemini request failed: {exc}") from exc
-    except OSError as exc:
+    except (OSError, httpx.HTTPError) as exc:
         # Transport-level failures (connection aborted/reset, DNS hiccup,
         # timeout) surface as raw OSError/ConnectionError from the
         # underlying HTTP client, not errors.APIError -- observed live as

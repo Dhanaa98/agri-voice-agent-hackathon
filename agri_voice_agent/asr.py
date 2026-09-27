@@ -76,7 +76,11 @@ class StreamingASR:
             RealTimeParameters(
                 sample_rate=self.sample_rate,
                 encoding=Encoding.pcm_s16le,
-                speech_model=SpeechModel.universal_streaming_multilingual,
+                # English-only, not the multilingual variant -- every
+                # question this app hears after a wakeword fires is
+                # English, and a model that isn't spending capacity on
+                # other languages transcribes it more accurately.
+                speech_model=SpeechModel.universal_streaming_english,
                 format_turns=True,
             )
         )

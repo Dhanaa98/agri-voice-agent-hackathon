@@ -239,6 +239,19 @@ Running log of build progress for this project at
   suitable for my farm" (unchanged prompt path) -> still correctly gives a
   suitability verdict. Mic gain/noise-suppression change is browser-side
   and needs live-device re-testing after deploy (can't be curl-tested).
+- **AssemblyAI streaming model switched from multilingual to English-only
+  (2026-09-27).** User asked specifically to improve transcription quality
+  for the wakeword-triggered question path (asr.py -- the one AssemblyAI
+  path still in active use now that push-to-talk uses the browser's own
+  SpeechRecognition, see the entry below). `StreamingASR.connect()` was
+  requesting `SpeechModel.universal_streaming_multilingual`; switched to
+  `SpeechModel.universal_streaming_english`, since every question this
+  app hears is English and a model not spending capacity across other
+  languages should transcribe it more accurately. Shared by both
+  farmer_server.py's `/voice` WebSocket and main.py's local CLI pipeline
+  (both use the same StreamingASR class), so the fix applies to both.
+  Needs a live mic test with a real ASSEMBLYAI_API_KEY to confirm the
+  accuracy improvement -- not verifiable from here.
 - **Push-to-talk switched from the untested AssemblyAI pipeline to the
   browser's built-in SpeechRecognition (2026-09-27).** User reported "I
   don't think the mic works" and asked for the mic to fill the text box

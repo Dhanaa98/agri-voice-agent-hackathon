@@ -909,16 +909,12 @@ Running log of build progress for this project at
   committing -- 39 files, initial commit made locally.
   **Explicitly NOT pushed to GitHub or deployed yet** -- user said "don't
   push anything yet, just give the steps" after I found two GitHub
-  accounts logged into `gh` (Hypeinsight, currently active; Dhanaa98) and
-  asked which should own the repo. Gave the manual steps instead (gh repo
-  create / push, then connect on render.com, add the 3 API keys as env
-  vars) for the user to run themselves when ready. **Next session: if
-  asked to deploy, confirm which GitHub account first (don't assume the
-  currently-active `gh` one) and confirm public/private before creating
-  anything remote -- both were explicitly decided this session (Hypeinsight
-  question was left unresolved/deferred; public was confirmed) but neither
-  should be treated as still-decided if considerable time has passed or
-  the user's GitHub setup may have changed.**
+  accounts logged into `gh` and asked which should own the repo. Gave the
+  manual steps instead (gh repo create / push, then connect on render.com,
+  add the 3 API keys as env vars) for the user to run themselves when
+  ready. Later settled as Dhanaa98 -- the repo is pushed there, and all
+  commit history/authorship was set/rewritten to that account (see the
+  entry after the crops_grown fix below).
 - **Wakewords collapsed from three to two: "Hey Field" (Weather+Crop) + "Hey
   Plant" (2026-09-17).** Continuing the earlier "should we merge wakewords"
   discussion (see the wakeword-phrase-review entry below, where the user

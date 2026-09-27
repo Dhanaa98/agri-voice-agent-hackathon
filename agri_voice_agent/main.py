@@ -44,7 +44,12 @@ from .domains.crop import CropAgent
 from .domains.plant import PlantAgent
 from .domains.weather import WeatherAgent
 from .events import EventBus
-from .farm_state import FarmState
+from .farm_state import FarmStore
+
+# Fixed farmer_id for this single-operator local CLI/demo pipeline -- see
+# VoiceAgentLoop.__init__'s comment on why this differs from the web
+# dashboard's real per-browser farmer identity.
+LOCAL_DEMO_FARMER_ID = "local-demo"
 from .intent import resolve_field_domain
 from .wakeword.router import WakewordRouter
 
@@ -67,9 +72,18 @@ class VoiceAgentLoop:
         # voice (that's the farmer dashboard's job, see farmer_server.py's
         # module docstring) -- it just always operates on the first farm on
         # file, auto-creating one so the loop works with zero setup. It
-        # shares the same FARM_STATE_PATH file, so a farm added through the
-        # farmer dashboard shows up here too.
-        self.farm_state = FarmState.load(config.FARM_STATE_PATH)
+        # shares the same FARM_STATE_PATH file and a fixed, well-known
+        # farmer_id (this is a single-operator local CLI demo, not a
+        # multi-tenant server -- see farmer_server.py's FarmStore for why
+        # the web dashboard needs real per-farmer identity and this
+        # doesn't), so a farm added through the farmer dashboard under
+        # that SAME farmer_id shows up here too. A farm created by some
+        # other farmer on the deployed web dashboard will NOT show up here
+        # -- that's the point of this change, not a regression. Keep the
+        # whole store, not just this farmer's FarmState, so saving never
+        # clobbers other farmers' data written to the same file.
+        self._farm_store = FarmStore.load(config.FARM_STATE_PATH)
+        self.farm_state = self._farm_store.get(LOCAL_DEMO_FARMER_ID)
         if not self.farm_state.farms:
             self.farm_state.add_farm("Farm 1")
         else:
@@ -125,7 +139,7 @@ class VoiceAgentLoop:
 
         print(f"[{domain}] response: {response}")
         self.events.emit("response", domain=domain, text=response)
-        self.farm_state.save(config.FARM_STATE_PATH)
+        self._farm_store.save(config.FARM_STATE_PATH)
         self.events.emit("farm_state", farm_state=self.farm_state.to_dict())
 
         if domain in MULTI_TURN_DOMAINS and not self._domain_conversation_done(domain):

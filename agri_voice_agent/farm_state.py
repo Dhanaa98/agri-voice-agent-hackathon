@@ -214,14 +214,68 @@ class FarmState:
             "active_farm_index": self.active_farm_index,
         }
 
+    @classmethod
+    def _from_dict(cls, data: dict) -> "FarmState":
+        farms = [FarmProfile._from_dict(f) for f in data.get("farms", [])]
+        return cls(farms=farms, active_farm_index=data.get("active_farm_index"))
+
+
+# Sentinel key the pre-multi-farmer flat farm_state.json is migrated under
+# (see FarmStore.load) -- a placeholder until some real farmer_id claims it.
+LEGACY_FARMER_KEY = "_legacy_unclaimed"
+
+
+@dataclass
+class FarmStore:
+    """All farmers' data, keyed by farmer_id (a UUID the browser generates
+    once and keeps in localStorage -- see SESSION_ID's sibling FARMER_ID in
+    farmer.html). Each farmer gets their own independent FarmState, so
+    "which farm?" resolution, farm lists and everything else that used to
+    read one shared global FarmState now reads one scoped to whoever is
+    actually asking.
+
+    REAL BUG FOUND AND FIXED (2026-09-27, reported live: testing from a
+    second phone as a separate user, then checking the first phone,
+    showed the second person's farm): before this, the whole app had
+    exactly one FarmState, shared by every visitor to the deployed URL --
+    SessionState (added earlier) only scoped which farm a given browser
+    TAB's conversation was about, never which farms existed for which
+    person, so every farmer's farms lived in the same list.
+    """
+
+    farmers: dict[str, FarmState] = field(default_factory=dict)
+
+    def get(self, farmer_id: str) -> FarmState:
+        state = self.farmers.get(farmer_id)
+        if state is None:
+            # A brand-new real farmer_id's very first request claims
+            # whatever pre-multi-farmer data is still sitting unclaimed
+            # under LEGACY_FARMER_KEY (per the user's explicit choice:
+            # "migrate it to whichever browser visits first after
+            # deploying") -- but only once: after this, the key is gone,
+            # so no later farmer_id can ever steal it too.
+            if farmer_id != LEGACY_FARMER_KEY:
+                state = self.farmers.pop(LEGACY_FARMER_KEY, None)
+            state = state or FarmState()
+            self.farmers[farmer_id] = state
+        return state
+
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2, default=str), encoding="utf-8")
+        data = {"farmers": {fid: fs.to_dict() for fid, fs in self.farmers.items()}}
+        Path(path).write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: str | Path) -> "FarmState":
+    def load(cls, path: str | Path) -> "FarmStore":
         path = Path(path)
         if not path.exists():
             return cls()
         data = json.loads(path.read_text(encoding="utf-8"))
-        farms = [FarmProfile._from_dict(f) for f in data.get("farms", [])]
-        return cls(farms=farms, active_farm_index=data.get("active_farm_index"))
+        if "farmers" in data:
+            return cls(farmers={fid: FarmState._from_dict(fs) for fid, fs in data["farmers"].items()})
+        # Pre-multi-farmer flat format ({"farms": [...], "active_farm_index":
+        # ...}) -- park it under the legacy key so the first real farmer_id
+        # to ask for state claims it (see get()), rather than losing
+        # whatever farms were already saved before this feature existed.
+        if "farms" in data:
+            return cls(farmers={LEGACY_FARMER_KEY: FarmState._from_dict(data)})
+        return cls()

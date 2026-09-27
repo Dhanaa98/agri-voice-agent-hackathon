@@ -73,6 +73,42 @@ Running log of build progress for this project at
   auto-generated farm name -- captured just "1" and failed to match
   anything. Fixed by capturing the full phrase and letting farm-list
   resolution try it whole before any stripping fallback.
+- **"add another farm" unrecognized, and farms not actually farmer-specific
+  (2026-09-27).** User reported two bugs from live testing: (1) "add
+  another farm" got "sorry, I didn't catch that", and (2) testing from a
+  second phone as a separate user, then checking back on the first phone,
+  showed the second person's farm.
+  1. `_ADD_FARM_RE` only accepted "a"/"a new" as the article before "farm",
+     so "another"/"one more" matched nothing. Fixed the regex to also
+     accept those, and extended `_ADD_FARM_LEAD_IN_RE` to strip "can I..."
+     (previously only "can/could you...").
+  2. The much bigger one: the whole app had exactly one `FarmState`, loaded
+     once at server startup and shared by literally every visitor to the
+     deployed URL. `SessionState` (added earlier) only ever scoped which
+     farm a given browser TAB's conversation was about -- never which
+     farms existed for which PERSON -- so every farmer's farms lived in
+     the same list. Fixed by adding `FarmStore` (farm_state.py): all
+     farmers' data keyed by `farmer_id`, a UUID the browser now generates
+     once and keeps in `localStorage` (`FARMER_ID` in farmer.html, sibling
+     to the existing per-page-load `SESSION_ID`), sent with every /chat,
+     /voice, and /farms* call. Existing pre-multi-farmer `farm_state.json`
+     (flat `{"farms": [...], ...}` format) is migrated under a
+     `LEGACY_FARMER_KEY` sentinel on load and claimed by whichever real
+     farmer_id asks for state FIRST (`FarmStore.get()`) -- per explicit
+     user decision to migrate it to whoever visits first after deploying,
+     not start everyone fresh. In farmer_server.py, rather than thread a
+     `farm_state` parameter through every one of the ~20 functions that
+     used to read the bare `_farm_state` global, `_farm_state` is now a
+     `_FarmStateProxy` object backed by a `contextvars.ContextVar`: each
+     request handler calls `_use_farm_state(farmer_id)` once at its entry
+     point, and every pre-existing `_farm_state.foo` call site keeps
+     working unchanged, now reading whichever FarmState that request
+     bound. Verified end-to-end with two simulated farmer_ids through the
+     real /chat path: farmer A's weather question still saw their own
+     pre-existing 2 farms (correctly claiming the legacy migration once);
+     farmer B's "add another farm called Riverside in Kampala" created it
+     only in farmer B's own farm list, invisible to farmer A and
+     vice versa -- matching the exact scenario reported live.
 - **Mic-permission delay on mobile (2026-09-27).** Reported live: slow/
   seemingly-broken mic permission prompt on mobile. Root cause:
   startWakewordListening() loaded the entire wakeword pipeline (WASM

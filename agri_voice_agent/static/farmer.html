@@ -1310,6 +1310,33 @@
 // silently reusing whatever farm anyone last picked.
 const SESSION_ID = crypto.randomUUID();
 
+// Persisted (unlike SESSION_ID above) in localStorage -- one per browser,
+// generated once and reused on every later visit, sent with every /chat
+// and /voice call so the server knows which farmer's OWN farms to read
+// and write (see FarmStore/_use_farm_state() in farmer_server.py).
+// REAL BUG FOUND AND FIXED (2026-09-27, reported live: testing from a
+// second phone as a separate user, then checking back on the first phone,
+// showed the second person's farm): before this existed, every visitor to
+// the deployed app shared one single global farm list -- SESSION_ID only
+// ever scoped which farm a given browser TAB's conversation was about,
+// never which farms existed for which person.
+function getFarmerId() {
+  try {
+    let id = localStorage.getItem("farmerId");
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem("farmerId", id);
+    }
+    return id;
+  } catch {
+    // localStorage unavailable (private browsing, blocked storage) -- fall
+    // back to a per-page-load id rather than crashing; farms just won't
+    // persist as "this farmer's" across a reload in that case.
+    return crypto.randomUUID();
+  }
+}
+const FARMER_ID = getFarmerId();
+
 const state = {
   // Which agent most recently answered -- purely informational now (used
   // for the redirect "Switched to X" notice and the location-modal
@@ -1593,7 +1620,7 @@ async function sendMessage(overrideText, farmName) {
   // Location is only ever meaningful to a weather-routed question, but the
   // farmer doesn't pick the domain anymore -- send it whenever the box has
   // a value and let the server ignore it for non-weather replies.
-  const payload = { text, session_id: SESSION_ID };
+  const payload = { text, session_id: SESSION_ID, farmer_id: FARMER_ID };
   const loc = els.locationBox.value.trim();
   if (loc) {
     payload.location = loc;
@@ -1753,7 +1780,7 @@ async function saveFarmEdit(index, name, location) {
     await fetch(`/farms/${index}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: trimmedName, location: location.trim() }),
+      body: JSON.stringify({ name: trimmedName, location: location.trim(), farmer_id: FARMER_ID }),
     });
   } catch (e) { /* best-effort -- panel just closes on the stale data */ }
   editingFarmIndex = null;
@@ -1767,7 +1794,7 @@ async function saveFarmEdit(index, name, location) {
 async function deleteFarmWithConfirm(index, name) {
   if (!window.confirm(`Delete ${name}? This removes all its history and can't be undone.`)) return;
   try {
-    await fetch(`/farms/${index}`, { method: "DELETE" });
+    await fetch(`/farms/${index}?farmer_id=${encodeURIComponent(FARMER_ID)}`, { method: "DELETE" });
   } catch (e) { /* best-effort -- list just refreshes to whatever the server actually has */ }
   editingFarmIndex = null;
   await loadFarmState();
@@ -1781,7 +1808,7 @@ function escapeHtml(s) {
 
 async function selectFarm(index) {
   try {
-    await fetch(`/farms/${index}/select`, { method: "POST" });
+    await fetch(`/farms/${index}/select?farmer_id=${encodeURIComponent(FARMER_ID)}`, { method: "POST" });
     await loadFarmState();
   } catch (e) { /* best-effort -- farm list will just retry on next render */ }
   closeDrawer();
@@ -1800,7 +1827,7 @@ async function addFarm() {
     await fetch("/farms", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, location: location || null }),
+      body: JSON.stringify({ name, location: location || null, farmer_id: FARMER_ID }),
     });
     els.newFarmName.value = "";
     els.newFarmLocation.value = "";
@@ -1847,7 +1874,7 @@ async function loadCapabilities() {
 
 async function loadFarmState() {
   try {
-    const resp = await fetch("/farm_state");
+    const resp = await fetch(`/farm_state?farmer_id=${encodeURIComponent(FARMER_ID)}`);
     renderFarmState(await resp.json());
   } catch (err) {
     /* leave placeholders */
@@ -2053,7 +2080,7 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
   const { gate = null, idleTimeoutMs = 0 } = opts;
   return new Promise((resolve) => {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${proto}//${location.host}/voice?session_id=${encodeURIComponent(SESSION_ID)}`);
+    const socket = new WebSocket(`${proto}//${location.host}/voice?session_id=${encodeURIComponent(SESSION_ID)}&farmer_id=${encodeURIComponent(FARMER_ID)}`);
     voice.voiceSocket = socket;
     voice.streaming = true;
 

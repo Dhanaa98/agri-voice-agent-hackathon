@@ -65,6 +65,7 @@ conversation about" selection is now per-session.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +81,7 @@ from .asr import StreamingASR
 from .domains.crop import CropAgent
 from .domains.plant import PlantAgent
 from .domains.weather import WeatherAgent
-from .farm_state import FarmProfile, FarmState
+from .farm_state import LEGACY_FARMER_KEY, FarmProfile, FarmState, FarmStore
 from .domains.weather import extract_location
 from .intent import classify_with_llm, detect_domain
 
@@ -178,7 +179,58 @@ def _get_session(session_id: str | None) -> SessionState:
     return session
 
 
-_farm_state = FarmState.load(config.FARM_STATE_PATH)
+# LEGACY_FARMER_KEY (see farm_state.py) is used as the fallback for a
+# missing/empty farmer_id -- a client that predates this feature, or a
+# direct API call -- so those callers keep seeing whatever farms already
+# existed before per-farmer scoping shipped, same fallback philosophy as
+# _get_session()'s "_legacy" session key above.
+_farm_store = FarmStore.load(config.FARM_STATE_PATH)
+
+# The real fix for "the farms should be farmer specific" (reported live,
+# 2026-09-27: testing from a second phone as a separate user, then
+# checking back on the first phone, showed the second person's farm). Every
+# function below still reads/writes a bare `_farm_state` exactly as before
+# -- unlike SessionState (which only ever scoped which farm a given
+# browser TAB's conversation was about), the module-level global here used
+# to be ONE FarmState shared by literally every visitor. Rather than thread
+# a `farm_state` parameter through every one of those ~20 functions
+# individually, `_farm_state` is now a request-scoped ContextVar: each
+# request handler resolves the caller's real FarmState via
+# `_use_farm_state(farmer_id)` right at its entry point (see _answer(),
+# _handle_voice_transcript(), and the /farm_state, /farms endpoints below),
+# and every existing `_farm_state.foo` reference transparently reads
+# whichever FarmState that request bound, via _FarmStateProxy.__getattr__.
+# Concurrency is safe because ContextVar is per-task/per-thread: FastAPI
+# runs each request's sync code in its own asyncio.to_thread worker, and a
+# contextvars snapshot is copied into that thread, not shared across it.
+_current_farm_state: contextvars.ContextVar[FarmState] = contextvars.ContextVar("_current_farm_state")
+
+
+class _FarmStateProxy:
+    """Forwards every attribute access to whichever FarmState the current
+    request bound via _use_farm_state() -- lets every pre-existing
+    `_farm_state.foo` call site below keep working unchanged after
+    `_farm_state` stopped being a single shared global."""
+
+    def __getattr__(self, name: str):
+        return getattr(_current_farm_state.get(), name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(_current_farm_state.get(), name, value)
+
+
+_farm_state = _FarmStateProxy()
+
+
+def _use_farm_state(farmer_id: str | None) -> FarmState:
+    """Bind `_farm_state` (see _FarmStateProxy above) to this farmer's own
+    FarmState for the rest of the current request. Call once, as early as
+    possible, in every request handler that touches farm data."""
+    state = _farm_store.get(farmer_id or LEGACY_FARMER_KEY)
+    _current_farm_state.set(state)
+    return state
+
+
 _agents: dict[str, object] = {}
 for _name, _cls in DOMAIN_AGENTS.items():
     try:
@@ -343,6 +395,12 @@ class ChatIn(BaseModel):
     # Optional so old/direct API callers still work (falls back to a single
     # shared legacy session, matching the pre-session-scoping behavior).
     session_id: str | None = None
+    # A UUID this browser/device generated once and persisted (localStorage,
+    # not per-tab like session_id above) -- scopes which farms exist for
+    # this request, see FarmStore/_use_farm_state(). Optional so old/direct
+    # API callers still work (falls back to LEGACY_FARMER_KEY, i.e. whatever
+    # farms existed before per-farmer scoping shipped).
+    farmer_id: str | None = None
 
 
 class ChatOut(BaseModel):
@@ -422,7 +480,8 @@ async def capabilities() -> dict:
 
 
 @app.get("/farm_state")
-async def get_farm_state() -> dict:
+async def get_farm_state(farmer_id: str | None = None) -> dict:
+    _use_farm_state(farmer_id)
     return _farm_state.to_dict()
 
 
@@ -435,7 +494,8 @@ class FarmOut(BaseModel):
 
 
 @app.get("/farms", response_model=list[FarmOut])
-async def list_farms() -> list[FarmOut]:
+async def list_farms(farmer_id: str | None = None) -> list[FarmOut]:
+    _use_farm_state(farmer_id)
     return [
         FarmOut(
             index=i,
@@ -451,6 +511,7 @@ async def list_farms() -> list[FarmOut]:
 class AddFarmIn(BaseModel):
     name: str
     location: str | None = None
+    farmer_id: str | None = None
 
 
 @app.post("/farms", response_model=FarmOut)
@@ -458,19 +519,21 @@ async def add_farm(body: AddFarmIn) -> FarmOut:
     """Explicitly add a farm from the Farms section UI (as opposed to the
     auto-save-as-"Farm 1" path in resolve_active_farm(), which only fires
     for the very first farm)."""
+    _use_farm_state(body.farmer_id)
     name = body.name.strip() or f"Farm {len(_farm_state.farms) + 1}"
     idx = _farm_state.add_farm(name, location=body.location or "", location_confirmed=bool(body.location))
-    _farm_state.save(config.FARM_STATE_PATH)
+    _farm_store.save(config.FARM_STATE_PATH)
     f = _farm_state.farms[idx]
     return FarmOut(index=idx, name=f.name, location=f.location, location_confirmed=f.location_confirmed, active=True)
 
 
 @app.post("/farms/{index}/select", response_model=FarmOut)
-async def select_farm(index: int) -> FarmOut:
+async def select_farm(index: int, farmer_id: str | None = None) -> FarmOut:
+    _use_farm_state(farmer_id)
     if not (0 <= index < len(_farm_state.farms)):
         raise ValueError(f"No farm at index {index}")
     _farm_state.set_active(index)
-    _farm_state.save(config.FARM_STATE_PATH)
+    _farm_store.save(config.FARM_STATE_PATH)
     f = _farm_state.farms[index]
     return FarmOut(index=index, name=f.name, location=f.location, location_confirmed=f.location_confirmed, active=True)
 
@@ -478,6 +541,7 @@ async def select_farm(index: int) -> FarmOut:
 class UpdateFarmIn(BaseModel):
     name: str | None = None
     location: str | None = None
+    farmer_id: str | None = None
 
 
 @app.patch("/farms/{index}", response_model=FarmOut)
@@ -486,6 +550,7 @@ async def update_farm(index: int, body: UpdateFarmIn) -> FarmOut:
     been added -- separate from POST /farms (creates a new one) and
     POST /farms/{index}/select (switches which is active). Either field
     may be omitted to leave it unchanged."""
+    _use_farm_state(body.farmer_id)
     if not (0 <= index < len(_farm_state.farms)):
         raise ValueError(f"No farm at index {index}")
     f = _farm_state.farms[index]
@@ -497,7 +562,7 @@ async def update_farm(index: int, body: UpdateFarmIn) -> FarmOut:
         location = body.location.strip()
         f.location = location
         f.location_confirmed = bool(location)
-    _farm_state.save(config.FARM_STATE_PATH)
+    _farm_store.save(config.FARM_STATE_PATH)
     return FarmOut(index=index, name=f.name, location=f.location, location_confirmed=f.location_confirmed, active=(index == _farm_state.active_farm_index))
 
 
@@ -521,11 +586,12 @@ def _delete_farm(index: int) -> None:
             other.active_farm_index = None
         elif other.active_farm_index > index:
             other.active_farm_index -= 1
-    _farm_state.save(config.FARM_STATE_PATH)
+    _farm_store.save(config.FARM_STATE_PATH)
 
 
 @app.delete("/farms/{index}")
-async def delete_farm(index: int) -> dict:
+async def delete_farm(index: int, farmer_id: str | None = None) -> dict:
+    _use_farm_state(farmer_id)
     if not (0 <= index < len(_farm_state.farms)):
         raise ValueError(f"No farm at index {index}")
     _delete_farm(index)
@@ -675,22 +741,27 @@ _ADD_FARM_RE = re.compile(
     # A leading "I need to"/"I want to"/"can you"/"let's"/etc. is stripped
     # first (see _match_add_farm) rather than folded in here, so this stays
     # readable; what's left must still start with the command verb.
-    r"^(?:add|create|make|set up|start)\s+(?:a\s+)?(?:new\s+)?farm\s*"
+    # "a"/"another"/"a new"/"one more" all mean the same thing here --
+    # REAL BUG FOUND AND FIXED (2026-09-27, reported live: "add another
+    # farm" got "sorry, I didn't catch that"): only "a"/"new" were
+    # accepted, so "another" -- an entirely ordinary way to ask for a
+    # second farm -- fell through this whole matcher.
+    r"^(?:add|create|make|set up|start)\s+(?:a\s+new\s+|a\s+|another\s+|one\s+more\s+)?farm\s*"
     r"(?:(?:called|named)\s+(?P<name1>.+?))?"
     r"(?:\s+in\s+(?P<location>.+?))?$",
     re.IGNORECASE,
 )
 # Natural lead-ins that precede the actual command in ordinary speech --
 # "I need to create a farm", "can you add a farm for me", "I'd like to make
-# a new farm". Stripped before _ADD_FARM_RE is tried. REAL BUG FOUND AND
-# FIXED (2026-09-27, reported live): _ADD_FARM_RE required the message to
-# START with the command verb, so any natural phrasing in front of it
-# ("I need to...") meant the whole sentence matched nothing at all and
-# silently fell through to normal domain routing instead of creating
-# anything.
+# a new farm", "can I add another farm". Stripped before _ADD_FARM_RE is
+# tried. REAL BUG FOUND AND FIXED (2026-09-27, reported live): _ADD_FARM_RE
+# required the message to START with the command verb, so any natural
+# phrasing in front of it ("I need to...", "can I...") meant the whole
+# sentence matched nothing at all and silently fell through to normal
+# domain routing instead of creating anything.
 _ADD_FARM_LEAD_IN_RE = re.compile(
     r"^(?:i\s+(?:need|want|would like|have)\s+to\s+|i'?d\s+like\s+to\s+|"
-    r"can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|"
+    r"(?:can|could)\s+(?:you|i)\s+(?:please\s+)?|"
     r"please\s+|let'?s\s+|i\s+want\s+)+",
     re.IGNORECASE,
 )
@@ -850,7 +921,7 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
         name = name or f"Farm {len(_farm_state.farms) + 1}"
         idx = _farm_state.add_farm(name, location=location, location_confirmed=bool(location))
         session.active_farm_index = idx
-        _farm_state.save(config.FARM_STATE_PATH)
+        _farm_store.save(config.FARM_STATE_PATH)
         if location:
             response = f"Added {name}, set to {location}."
         else:
@@ -900,7 +971,7 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
                 "general", f"I couldn't find a farm called {old}. Your farms are: {names}.", None, text, session.session_id
             )
         _farm_state.farms[idx].name = new
-        _farm_state.save(config.FARM_STATE_PATH)
+        _farm_store.save(config.FARM_STATE_PATH)
         return _reply("general", f"Renamed {old} to {new}.", _farm_state.farms[idx], text, session.session_id)
 
     relocate_match = _match_relocate_farm(stripped)
@@ -920,7 +991,7 @@ def _handle_farm_management(text: str, session: SessionState) -> dict | None:
         farm.location = location
         farm.location_confirmed = True
         farm.country_code = ""  # stale until the next weather call re-geocodes
-        _farm_state.save(config.FARM_STATE_PATH)
+        _farm_store.save(config.FARM_STATE_PATH)
         return _reply("general", f"{farm.name} is now set to {location}.", farm, text, session.session_id)
 
     return None
@@ -934,7 +1005,7 @@ def _reply(domain: str, response: str, farm: FarmProfile | None, text: str, sess
     if farm is not None:
         farm.add_chat_turn(domain=domain, role="farmer", text=text)
         farm.add_chat_turn(domain=domain, role="agent", text=response)
-        _farm_state.save(config.FARM_STATE_PATH)
+        _farm_store.save(config.FARM_STATE_PATH)
     done = _domain_conversation_done(domain, session_id) if domain in MULTI_TURN_DOMAINS else True
     return {"domain": domain, "response": response, "done": done, "farm_state": _farm_state.to_dict(), **extra}
 
@@ -945,10 +1016,12 @@ def _answer(
     farm_name: str | None = None,
     crop: str | None = None,
     session_id: str | None = None,
+    farmer_id: str | None = None,
 ) -> dict:
     """Shared by typed /chat and the /voice WebSocket, so both behave the
     same: clarify instead of guessing, ask for a location before answering
     weather when none is known, and hand every agent the actual question."""
+    _use_farm_state(farmer_id)
     session = _get_session(session_id)
 
     text = (text or "").strip()
@@ -1013,7 +1086,7 @@ def _answer(
                     farm.location = place
                     farm.location_confirmed = True
                     farm.country_code = country_code
-                    _farm_state.save(config.FARM_STATE_PATH)
+                    _farm_store.save(config.FARM_STATE_PATH)
                     return _reply("general", f"{farm.name} is set to {place}.", farm, text, session.session_id)
             if place and not geocode_failed and weather_agent is None:
                 # No weather agent configured (missing API key) -- can't
@@ -1022,7 +1095,7 @@ def _answer(
                 session.pending_new_farm_location = None
                 farm.location = place
                 farm.location_confirmed = True
-                _farm_state.save(config.FARM_STATE_PATH)
+                _farm_store.save(config.FARM_STATE_PATH)
                 return _reply("general", f"{farm.name} is set to {place}.", farm, text, session.session_id)
             return _reply(
                 "general",
@@ -1156,19 +1229,22 @@ def _answer(
 async def chat(body: ChatIn) -> ChatOut:
     """Typed-text path -- see _answer(). Runs in a worker thread because
     the agents make blocking HTTP/LLM calls."""
-    result = await asyncio.to_thread(_answer, body.text, body.location, body.farm_name, body.crop, body.session_id)
+    result = await asyncio.to_thread(
+        _answer, body.text, body.location, body.farm_name, body.crop, body.session_id, body.farmer_id
+    )
     return ChatOut(**result)
 
 
 @app.websocket("/voice")
-async def voice_session(websocket: WebSocket, session_id: str | None = None) -> None:
+async def voice_session(websocket: WebSocket, session_id: str | None = None, farmer_id: str | None = None) -> None:
     """Real-microphone path: browser streams raw 16-bit PCM audio frames
     over this socket, server feeds them to StreamingASR, and the final
     transcript is routed the same way as a typed /chat message once ASR
     reports end-of-turn -- see module docstring. UNVERIFIED end-to-end, no
     AssemblyAI key configured in this project yet. `session_id` (a query
     param, e.g. /voice?session_id=...) scopes farm/domain/diagnosis state
-    to this browser tab -- see SessionState.
+    to this browser tab -- see SessionState. `farmer_id` (same query-param
+    style) scopes which farms exist at all -- see FarmStore/_use_farm_state().
     """
     await websocket.accept()
 
@@ -1180,7 +1256,9 @@ async def voice_session(websocket: WebSocket, session_id: str | None = None) -> 
     loop = asyncio.get_running_loop()
 
     def on_final_transcript(transcript: str) -> None:
-        asyncio.run_coroutine_threadsafe(_handle_voice_transcript(websocket, transcript, session_id), loop)
+        asyncio.run_coroutine_threadsafe(
+            _handle_voice_transcript(websocket, transcript, session_id, farmer_id), loop
+        )
 
     try:
         asr = StreamingASR(on_final_transcript=on_final_transcript)
@@ -1212,8 +1290,10 @@ async def voice_session(websocket: WebSocket, session_id: str | None = None) -> 
         asr.disconnect()
 
 
-async def _handle_voice_transcript(websocket: WebSocket, transcript: str, session_id: str | None) -> None:
-    result = await asyncio.to_thread(_answer, transcript, None, None, None, session_id)
+async def _handle_voice_transcript(
+    websocket: WebSocket, transcript: str, session_id: str | None, farmer_id: str | None = None
+) -> None:
+    result = await asyncio.to_thread(_answer, transcript, None, None, None, session_id, farmer_id)
     await websocket.send_json({"type": "result", "transcript": transcript, **result})
 
 

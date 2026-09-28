@@ -1682,7 +1682,31 @@ function domainLabel(domain) {
   return domain === "weather" ? "Weather" : domain === "crop" ? "Crop" : "Plant Health";
 }
 
+// True once restoreTranscript() has run (successfully or not) -- renderFarmState()
+// runs on every farm mutation (add/rename/delete/select), not just page load,
+// so this guards against re-inserting the saved history a second time.
+let transcriptRestored = false;
+
+// REAL FEATURE ADDED (2026-09-28, user asked: does the chat remember the
+// conversation across a page refresh?). Before this, state.messages started
+// empty on every load -- farms and each farm's own chat_history persisted
+// server-side, but the visible log the farmer was just looking at didn't,
+// so a refresh looked like starting over even though nothing was actually
+// forgotten. farm_state.py's FarmState now keeps a farmer-scoped `transcript`
+// (every "you"/"agent" bubble, including ones with no farm attached, unlike
+// chat_history which only ever recorded farm-attached turns) -- this replays
+// it once, back into state.messages, before the first render.
+function restoreTranscript(fs) {
+  if (transcriptRestored) return;
+  transcriptRestored = true;
+  const transcript = fs.transcript || [];
+  if (!transcript.length) return;
+  state.messages = transcript.map((t) => ({ kind: t.kind, domain: t.domain, text: t.text, extra: null }));
+  renderMessages();
+}
+
 function renderFarmState(fs) {
+  restoreTranscript(fs);
   const farms = fs.farms || [];
   const activeIdx = fs.active_farm_index;
   const active = (activeIdx != null && farms[activeIdx]) ? farms[activeIdx] : null;

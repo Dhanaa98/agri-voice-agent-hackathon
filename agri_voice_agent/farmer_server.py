@@ -1067,10 +1067,18 @@ def _reply(domain: str, response: str, farm: FarmProfile | None, text: str, sess
     if session is not None:
         session.history.extend([("farmer", text), ("assistant", response)])
         del session.history[:-20]
+    # Farmer-scoped, not farm-scoped -- see TranscriptEntry's docstring.
+    # Recorded even when `farm` is None (farm management, farewells, mic
+    # checks) so the visible chat log can be replayed in full on a page
+    # refresh via GET /conversation, not just the subset that happened to
+    # have a farm attached.
+    if text.strip():
+        _farm_state.add_transcript_entry("you", domain, text)
+    _farm_state.add_transcript_entry("agent", domain, response)
     if farm is not None:
         farm.add_chat_turn(domain=domain, role="farmer", text=text)
         farm.add_chat_turn(domain=domain, role="agent", text=response)
-        _farm_store.save(config.FARM_STATE_PATH)
+    _farm_store.save(config.FARM_STATE_PATH)
     done = _domain_conversation_done(domain, session_id) if domain in MULTI_TURN_DOMAINS else True
     return {"domain": domain, "response": response, "done": done, "farm_state": _farm_state.to_dict(), **extra}
 

@@ -291,6 +291,49 @@ Running log of build progress for this project at
   GET /farm_state), acknowledged naturally instead of getting a
   suitability verdict; a later "what am I growing" correctly recalls both
   from the saved field, not from chat-history guesswork.
+- **Visible chat log now survives a page refresh (2026-09-28).** User
+  asked: does the chat remember the conversation across a refresh, "for
+  each id"? It partially did -- each farm's own `chat_history` and the
+  farm list itself already persisted to disk -- but the on-screen bubbles
+  (`state.messages` in farmer.html) only ever lived in page memory, so a
+  reload always looked like starting over even though nothing was
+  actually forgotten server-side. Two gaps, both closed:
+  1. `chat_history` (per-farm) never recorded a turn unless a specific
+     farm was already attached -- so farm-management replies ("add a
+     farm", "what farms do I have", a farewell, a mic-check) never showed
+     up in it at all, only weather/crop/plant answers did.
+  2. Even for the turns that WERE recorded, nothing on the frontend ever
+     read them back on load -- `state.messages` just started as `[]`.
+  Fixed by adding `TranscriptEntry` + `FarmState.transcript`
+  (farm_state.py) -- farmer-scoped (not per-farm, not per-tab), so it
+  captures every reply the farmer actually saw, farm-attached or not, in
+  the same `{kind, domain, text}` shape farmer.html's own `addMessage()`
+  already uses. `_reply()` (farmer_server.py) now appends to it
+  unconditionally (previously the whole function's `_farm_store.save()`
+  call was gated on `farm is not None`; moved it out so a farm-less reply
+  still persists). Capped at 200 entries, same pattern as `chat_history`.
+  Since `FarmState.to_dict()` already feeds `GET /farm_state` (which the
+  page already calls once on every load), no new endpoint was needed --
+  the transcript just rides along in the existing response.
+  `renderFarmState()` (farmer.html) now calls a new `restoreTranscript()`
+  the first time it runs (guarded by a `transcriptRestored` flag, since
+  `renderFarmState()` also re-runs after every farm add/rename/delete/
+  select and would otherwise re-insert the whole history each time),
+  replaying the saved transcript into `state.messages` before the first
+  render.
+  Deliberately NOT changed: `SESSION_ID` (farmer.html) still regenerates
+  every page load, so mid-flow session state (a pending "which farm?" or
+  "which town?" question, which farm a multi-farm session had resolved
+  to) still resets on refresh -- only the visible history is restored, by
+  design; persisting SESSION_ID too would mean two tabs of the same
+  browser start sharing one live conversation (localStorage is shared
+  across tabs), which risks the same unsynchronized-concurrent-session
+  behavior flagged in the 2026-09-27 QA pass, so left alone for this fix.
+  Verified end-to-end via a real Playwright browser: added a farm, asked
+  a weather question (4 chat bubbles on screen), reloaded the page, and
+  confirmed all 4 bubbles reappeared with identical text; also verified
+  via direct API calls that two different farmer_ids' transcripts stay
+  fully isolated from each other.
 - **AssemblyAI streaming model switched from multilingual to English-only
   (2026-09-27).** User asked specifically to improve transcription quality
   for the wakeword-triggered question path (asr.py -- the one AssemblyAI

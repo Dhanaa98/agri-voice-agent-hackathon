@@ -43,6 +43,25 @@ class ChatTurn:
 
 
 @dataclass
+class TranscriptEntry:
+    """One visible chat bubble, farmer-scoped (not per-farm, not per-tab) --
+    what makes the on-screen conversation survive a page refresh. Distinct
+    from FarmProfile.chat_history (ChatTurn above): that only records a
+    turn when a specific farm is already attached, so farm-management
+    replies ("add a farm", "what farms do I have", a farewell) never
+    appeared in it. This records every reply the farmer actually saw,
+    farm-attached or not, in the same "kind" vocabulary the frontend's
+    addMessage() already uses, so the page can just replay these on load
+    instead of the chat log starting empty every time -- see GET
+    /conversation in farmer_server.py."""
+
+    kind: str  # "you" | "agent" | "notice"
+    domain: str | None
+    text: str
+    timestamp: str
+
+
+@dataclass
 class WeatherSnapshot:
     temp_c: float | None = None
     humidity_pct: float | None = None
@@ -203,6 +222,21 @@ class FarmState:
     # or a multi-farm farmer who hasn't said which one they mean this
     # exchange -- see farmer_server.py's farm-disambiguation logic).
     active_farm_index: int | None = None
+    # The farmer's whole visible conversation, across every farm and every
+    # browser tab/session -- see TranscriptEntry's docstring for why this
+    # exists separately from each farm's own chat_history. Capped the same
+    # way chat_history is, for the same reason (bounded file growth for an
+    # otherwise unbounded, always-appending log).
+    transcript: list[TranscriptEntry] = field(default_factory=list)
+
+    MAX_TRANSCRIPT = 200
+
+    def add_transcript_entry(self, kind: str, domain: str | None, text: str) -> None:
+        self.transcript.append(
+            TranscriptEntry(kind=kind, domain=domain, text=text, timestamp=datetime.now(timezone.utc).isoformat())
+        )
+        if len(self.transcript) > self.MAX_TRANSCRIPT:
+            self.transcript = self.transcript[-self.MAX_TRANSCRIPT :]
 
     @property
     def active_farm(self) -> FarmProfile | None:
@@ -226,12 +260,14 @@ class FarmState:
         return {
             "farms": [f.to_dict() for f in self.farms],
             "active_farm_index": self.active_farm_index,
+            "transcript": [asdict(t) for t in self.transcript],
         }
 
     @classmethod
     def _from_dict(cls, data: dict) -> "FarmState":
         farms = [FarmProfile._from_dict(f) for f in data.get("farms", [])]
-        return cls(farms=farms, active_farm_index=data.get("active_farm_index"))
+        transcript = [TranscriptEntry(**t) for t in data.get("transcript", [])]
+        return cls(farms=farms, active_farm_index=data.get("active_farm_index"), transcript=transcript)
 
 
 # Sentinel key the pre-multi-farmer flat farm_state.json is migrated under

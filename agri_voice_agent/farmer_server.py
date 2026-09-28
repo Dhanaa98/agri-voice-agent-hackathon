@@ -71,12 +71,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config
+from . import config, tts_client
 from .asr import StreamingASR
 from .domains.crop import CropAgent
 from .domains.plant import PlantAgent
@@ -535,6 +535,12 @@ async def capabilities() -> dict:
             name: shared_models_present and (WAKEWORD_MODELS_DIR / f"{name}.onnx").exists()
             for name in ("field",)
         },
+        # elevenlabs-tts branch only -- lets farmer.html know whether to
+        # even attempt the cloud-voice path before falling back to the
+        # browser's own free speechSynthesis, same "never offer a control
+        # that would just fail" pattern every other capability here
+        # already follows.
+        "cloud_tts_available": bool(config.ELEVENLABS_API_KEY and config.ELEVENLABS_VOICE_ID),
     }
 
 
@@ -673,6 +679,25 @@ async def clear_conversation(farmer_id: str | None = None) -> dict:
         f.chat_history = []
     _farm_store.save(config.FARM_STATE_PATH)
     return {"ok": True}
+
+
+class SpeakIn(BaseModel):
+    text: str
+
+
+# elevenlabs-tts branch only. farmer.html's speak()/speakAndWait() call
+# this first (only when /capabilities said cloud_tts_available) and fall
+# back to the browser's own speechSynthesis on any failure -- a 503 here
+# is the expected, handled shape of "not configured/request failed", not
+# a bug, so the frontend must treat it as "use the free fallback" rather
+# than surfacing an error to the farmer over a nice-to-have.
+@app.post("/speak")
+async def speak(body: SpeakIn) -> Response:
+    try:
+        audio = await asyncio.to_thread(tts_client.synthesize_speech, body.text)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 class ResolveLocationIn(BaseModel):

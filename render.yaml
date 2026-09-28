@@ -14,3 +14,10 @@ services:
         sync: false
       - key: DEFAULT_LOCATION
         value: Colombo,LK
+      # elevenlabs-tts branch only -- cloud TTS for spoken replies. Both
+      # optional: without them the app falls back to the browser's free
+      # speechSynthesis exactly as it does on master. See .env.example.
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false

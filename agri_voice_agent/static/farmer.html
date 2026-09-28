@@ -2094,7 +2094,52 @@ const voice = {
   streaming: false,
 };
 
+// ---------- Cloud TTS (elevenlabs-tts branch only, not on master) ----------
+//
+// "Can we make the voice not robotic" -- speak()/speakAndWait() below try
+// ElevenLabs first (only when /capabilities said cloud_tts_available:
+// ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID both actually set server-side)
+// and fall back to the exact same browser speechSynthesis code this file
+// already had on ANY failure (not configured, request failed, playback
+// error) -- renamed to speakBrowser()/speakAndWaitBrowser() below, kept
+// byte-for-byte otherwise. Every existing call site still just calls
+// speak()/speakAndWait(); nothing else in this file changed.
+//
+// Real cost of this path, worth knowing before deciding to keep this
+// branch: a network round trip per reply (the browser path is instant,
+// local, and free) and ElevenLabs' free-tier character budget, which is
+// far smaller than Gemini's -- watch usage if this graduates to master.
+function speakCloud(text) {
+  if (!text) return Promise.resolve();
+  return fetch("/speak", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  }).then((resp) => {
+    if (!resp.ok) throw new Error(`TTS request failed: ${resp.status}`);
+    return resp.blob();
+  }).then((blob) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    const cleanup = () => URL.revokeObjectURL(url);
+    audio.addEventListener("ended", cleanup, { once: true });
+    audio.addEventListener("error", cleanup, { once: true });
+    return audio.play();
+  });
+}
+
+// Same shape as speakAndWaitCloud below but fire-and-forget -- resolves/
+// rejects once playback STARTS (matching the old plain speak()'s own
+// "don't block the caller" contract), not once it ends.
 function speak(text) {
+  if (state.capabilities?.cloud_tts_available) {
+    speakCloud(text).catch(() => speakBrowser(text));
+    return;
+  }
+  speakBrowser(text);
+}
+
+function speakBrowser(text) {
   try {
     if (!("speechSynthesis" in window) || !text) return;
     window.speechSynthesis.cancel();  // don't stack replies if one is still talking
@@ -2104,7 +2149,55 @@ function speak(text) {
   } catch (e) { /* TTS is a nice-to-have, never block on it failing */ }
 }
 
-// Same as speak(), but resolves once playback actually finishes (or
+// Resolves `true` once ElevenLabs audio actually finishes playing, or
+// `false` on ANY failure (fetch, decode, playback) so the caller falls
+// back to speakAndWaitBrowser() -- never rejects, matching
+// speakAndWaitBrowser()'s own "always eventually resolves" contract,
+// which every call site (the wakeword greeting/reply loop) depends on to
+// know when it's safe to start listening again.
+function speakAndWaitCloud(text) {
+  return new Promise((resolve) => {
+    if (!text) { resolve(true); return; }
+    fetch("/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }).then((resp) => {
+      if (!resp.ok) { resolve(false); return; }
+      return resp.blob().then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        let settled = false;
+        const settle = (ok) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          URL.revokeObjectURL(url);
+          resolve(ok);
+        };
+        // Same generous-timeout safety net as speakAndWaitBrowser() --
+        // treated as "probably finished" (true), not a failure, so a
+        // flaky-but-eventually-fine `ended` event doesn't trigger an
+        // unnecessary/overlapping browser-TTS fallback on top of audio
+        // that's actually still playing fine.
+        const estimatedMs = Math.max(1500, text.length * 90);
+        const timeoutId = setTimeout(() => settle(true), estimatedMs + 8000);
+        audio.addEventListener("ended", () => settle(true), { once: true });
+        audio.addEventListener("error", () => settle(false), { once: true });
+        audio.play().catch(() => settle(false));
+      });
+    }).catch(() => resolve(false));
+  });
+}
+
+function speakAndWait(text) {
+  if (state.capabilities?.cloud_tts_available) {
+    return speakAndWaitCloud(text).then((ok) => (ok ? undefined : speakAndWaitBrowser(text)));
+  }
+  return speakAndWaitBrowser(text);
+}
+
+// Same as speakBrowser(), but resolves once playback actually finishes (or
 // immediately if speech synthesis isn't available/fails) -- for call
 // sites where starting mic capture before the browser's own voice has
 // finished playing would let the mic pick up that playback as if the
@@ -2116,7 +2209,7 @@ function speak(text) {
 // was literally "How can I help you today.") -- speechSynthesis.speak()
 // returns immediately once playback STARTS, not once it ends, so nothing
 // was actually waiting for the greeting to finish before listening.
-function speakAndWait(text) {
+function speakAndWaitBrowser(text) {
   return new Promise((resolve) => {
     try {
       if (!("speechSynthesis" in window) || !text) {
@@ -2922,6 +3015,18 @@ els.enableVoiceBtn.addEventListener("click", () => {
     unlock.volume = 0.01;
     window.speechSynthesis.speak(unlock);
   } catch (e) { /* best-effort -- if this fails, later speak() calls would too */ }
+  // elevenlabs-tts branch only: the same mobile autoplay-gesture
+  // restriction that made the speechSynthesis unlock above necessary
+  // almost certainly applies to <audio> playback too (speakCloud()/
+  // speakAndWaitCloud() create a fresh Audio() per reply, and later
+  // programmatic .play() calls from an async callback like the wakeword
+  // greeting are exactly the case mobile browsers restrict) -- priming
+  // one silent play() here, inside this real click, before any cloud-TTS
+  // reply is ever attempted.
+  try {
+    const audioUnlock = new Audio();
+    audioUnlock.play().catch(() => {});
+  } catch (e) { /* best-effort -- if this fails, later cloud playback would too */ }
   startWakewordListening().catch((err) => {
     addMessage("error", null, "Couldn't start voice listening. Check your microphone permission in the browser's site settings.");
     stopWakewordListening();

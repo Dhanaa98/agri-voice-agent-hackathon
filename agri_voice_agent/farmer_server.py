@@ -1471,6 +1471,21 @@ async def voice_session(websocket: WebSocket, session_id: str | None = None, far
 async def _handle_voice_transcript(
     websocket: WebSocket, transcript: str, session_id: str | None, farmer_id: str | None = None
 ) -> None:
+    # REAL FEATURE ADDED (2026-09-28, user asked for a distinct "thinking"
+    # indicator, separate from "listening" and "answering"). Before this,
+    # the client had no way to know ASR had already finalized the
+    # transcript -- "result" below is the FIRST message sent after
+    # end-of-turn, and it only arrives once _answer() (routing, weather/
+    # Gemini calls, everything) has ALSO finished, so the farmer saw
+    # nothing change for however long that took (measured up to ~20s for
+    # an interpreter-routed message, see docs/USER_GUIDE.md's latency
+    # table) -- dead air with no feedback that anything was happening.
+    # Sending the transcript the moment ASR is done, before _answer()
+    # even starts, lets the client switch to a "thinking" state
+    # immediately (and show what was actually heard, while the real
+    # answer is still being computed) instead of the "listening" state
+    # just going stale until the full reply shows up.
+    await websocket.send_json({"type": "transcribed", "transcript": transcript})
     result = await asyncio.to_thread(_answer, transcript, None, None, None, session_id, farmer_id)
     await websocket.send_json({"type": "result", "transcript": transcript, **result})
 

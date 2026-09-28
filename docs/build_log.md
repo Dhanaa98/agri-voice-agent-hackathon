@@ -366,6 +366,55 @@ Running log of build progress for this project at
   its name/location survive a clear while `chat_history` and `transcript`
   both come back empty; checked the button doesn't cause horizontal
   overflow at 375px mobile width.
+- **Four distinct voice states, each with its own color and animation
+  (2026-09-28).** User asked for listening-for-wakeword / listening-to-
+  speech / thinking / answering to each look and feel different, not
+  just read different text. Before this: "listening for the wakeword"
+  already had its own look (the wake-indicator pill, pulsing dot); the
+  other three all shared one style (`voice-status-row.heard`, static mic/
+  chat icon, only the TEXT changed) or didn't exist as a visible state at
+  all --  `.voice-status-row.speaking`'s CSS was defined but never once
+  applied in JS, so "answering" had no indicator, and "thinking" wasn't
+  shown at all: the server's `/voice` WebSocket only ever sent ONE message
+  after end-of-turn (`"result"`, transcript + response together, only
+  sent once `_answer()` -- routing, weather/Gemini calls, everything --
+  had ALREADY finished), so the farmer saw nothing change for however
+  long that took. **Real number found while verifying:** a genuinely
+  slow case (an interpreter-routed general question, two sequential
+  Gemini calls) measured 24.5s end to end -- that used to be 24.5
+  seconds of complete dead air with the stale "go ahead…" text still
+  showing.
+  Backend: `_handle_voice_transcript()` (farmer_server.py) now sends a
+  `{"type": "transcribed", "transcript": ...}` message the INSTANT ASR
+  finalizes, before `_answer()` even starts, so the client learns "your
+  speech was heard, now computing a reply" immediately instead of only
+  finding out once the whole reply is ready.
+  Frontend: renamed the `"heard"` kind to `"listening"` (clearer name,
+  matches what the user asked for) and gave each of the three states real
+  motion instead of a static icon swap -- `voiceStatusIconMarkup()` picks
+  one of three custom animated icons based on `kind`: `.eq-bars` (3
+  equalizer bars, blue, for "listening" -- actively capturing speech),
+  `.think-dots` (3 bouncing dots, neutral grey, for "thinking" -- waiting
+  on the server), `.speak-pulse` (a pulsing ring around the speaker icon,
+  amber, for "speaking" -- reusing the existing `--plant` amber token the
+  dead `.speaking` CSS already had). Wired into the actual state
+  transitions: the wakeword greeting itself is now correctly shown as
+  "speaking" (it genuinely IS the assistant talking, even though no real
+  answer has been generated yet); the new `"transcribed"` message flips
+  the row to "thinking" (also stops mic capture right away instead of
+  leaving it open through the whole reply-computation time, and cancels
+  the idle timeout, since a slow LLM call must never look like "the
+  farmer never said anything"); `handleAgentReply()` flips to "speaking"
+  right before `speakAndWait()` actually starts playing the reply, for
+  both the ambiguous-farm-picker reply and a normal answer.
+  Verified: backend message sequence via a raw WebSocket client sending
+  synthesized speech -- confirmed `"transcribed"` arrives before
+  `"result"`, and that the gap between them can be many seconds (the
+  24.5s case above) with the connection staying healthy throughout, not
+  hanging. Frontend: drove each state directly in a real browser and
+  screenshotted -- listening (blue, animated bars), thinking (grey,
+  animated dots), speaking (amber, speaker icon) all render as visually
+  distinct with zero console/page errors.
 - **AssemblyAI streaming model switched from multilingual to English-only
   (2026-09-27).** User asked specifically to improve transcription quality
   for the wakeword-triggered question path (asr.py -- the one AssemblyAI

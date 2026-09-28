@@ -615,10 +615,46 @@
     border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
-  .voice-status-row.heard { background: var(--weather-soft); color: var(--weather); }
+  /* Four distinct voice states, each with its own color AND motion so a
+     farmer can tell at a glance which phase they're in without reading
+     the text -- REAL FEATURE ADDED (2026-09-28, user asked for
+     listening-for-wakeword/listening-to-speech/thinking/answering to
+     each look different). "Listening for the wakeword" is the existing
+     wake-indicator pill in the panel header (pulsing dot, unchanged);
+     these three cover the row below it, once a wakeword has fired:
+     listening to speech (blue, equalizer bars), thinking (neutral, three
+     bouncing dots -- the server is running the ASR transcript through
+     the domain agent/LLM), and answering (amber, a pulsing speaker ring
+     while speechSynthesis is actually playing the reply aloud). */
+  .voice-status-row.listening { background: var(--weather-soft); color: var(--weather); }
+  .voice-status-row.thinking { background: var(--sunken); color: var(--ink-2); }
   .voice-status-row.speaking { background: var(--plant-soft); color: var(--plant); }
-  #voice-status-icon { display: grid; place-items: center; }
+  #voice-status-icon { display: grid; place-items: center; width: 16px; height: 16px; flex-shrink: 0; }
   #voice-status-icon .ic { width: 16px; height: 16px; }
+
+  .eq-bars { display: inline-flex; align-items: center; gap: 3px; height: 14px; }
+  .eq-bars span { width: 3px; height: 14px; border-radius: 2px; background: currentColor; animation: eq-bounce 0.9s ease-in-out infinite; transform-origin: center; }
+  .eq-bars span:nth-child(1) { animation-delay: -0.3s; }
+  .eq-bars span:nth-child(2) { animation-delay: -0.15s; }
+  .eq-bars span:nth-child(3) { animation-delay: 0s; }
+  @keyframes eq-bounce { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+
+  .think-dots { display: inline-flex; gap: 3px; }
+  .think-dots span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: bounce 1.2s infinite ease-in-out; }
+  .think-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .think-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+  .speak-pulse { position: relative; display: grid; place-items: center; }
+  .speak-pulse::before {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    opacity: 0;
+    animation: speak-ring 1.5s ease-out infinite;
+  }
+  @keyframes speak-ring { 0% { transform: scale(0.55); opacity: 0.65; } 100% { transform: scale(1.5); opacity: 0; } }
 
   /* Empty state */
 
@@ -1691,14 +1727,20 @@ async function handleAgentReply(data, opts) {
     // and re-send the SAME question with farm_name set once tapped, so
     // the farmer never has to retype anything.
     addMessage("picker", data.domain, null, { names: data.ambiguous_farms, retryText });
-    if (spoken) await speakAndWait(data.response);
+    if (spoken) {
+      setVoiceStatus("speaking", "Speaking…");
+      await speakAndWait(data.response);
+    }
     return;
   }
 
   addMessage("agent", data.domain, data.response);
   renderFarmState(data.farm_state);
 
-  if (spoken) await speakAndWait(data.response);
+  if (spoken) {
+    setVoiceStatus("speaking", "Speaking…");
+    await speakAndWait(data.response);
+  }
 }
 
 function domainLabel(domain) {
@@ -2098,10 +2140,19 @@ function speakAndWait(text) {
   });
 }
 
+// One distinct animated icon per voice state -- see the CSS block above
+// (.eq-bars/.think-dots/.speak-pulse) for what each actually looks like.
+function voiceStatusIconMarkup(kind) {
+  if (kind === "listening") return '<span class="eq-bars"><span></span><span></span><span></span></span>';
+  if (kind === "thinking") return '<span class="think-dots"><span></span><span></span><span></span></span>';
+  if (kind === "speaking") return `<span class="speak-pulse">${svgIcon("speaker")}</span>`;
+  return svgIcon("mic");
+}
+
 function setVoiceStatus(kind, text) {
   els.voiceStatusRow.hidden = false;
   els.voiceStatusRow.className = "voice-status-row" + (kind ? ` ${kind}` : "");
-  els.voiceStatusIcon.innerHTML = svgIcon(kind === "heard" ? "chat" : kind === "speaking" ? "speaker" : "mic");
+  els.voiceStatusIcon.innerHTML = voiceStatusIconMarkup(kind);
   els.voiceStatusText.textContent = text;
 }
 
@@ -2262,14 +2313,27 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
           }, idleTimeoutMs);
         }
         return;
+      } else if (data.type === "transcribed") {
+        // ASR just finalized -- NOT terminal, still waiting for _answer()
+        // to actually compute a reply (see _handle_voice_transcript()'s
+        // own comment on why this message exists). Stop capturing here,
+        // not on "result": there's nothing left to say once the transcript
+        // is final, and leaving the mic open through however long the
+        // reply takes to compute serves no purpose. Also cancel the idle
+        // timer -- it exists to catch "the farmer never said anything",
+        // which is moot now that we have a transcript; a slow LLM call
+        // must never look like a timeout.
+        if (stopCapture) { stopCapture(); stopCapture = null; }
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        setVoiceStatus("thinking", data.transcript ? `"${data.transcript}"` : "Thinking…");
+        return;
       } else if (data.type === "error") {
         setVoiceStatus(null, data.message || "Voice input error.");
         setTimeout(hideVoiceStatus, 3000);
       } else if (data.type === "result") {
         if (finished) return;
         outcome.gotResult = true;
-        // Stop the mic BEFORE the reply is spoken, or the reply's own
-        // playback gets streamed straight back to ASR.
+        // Safety net -- normally already stopped by "transcribed" above.
         if (stopCapture) { stopCapture(); stopCapture = null; }
         const youMessage = { kind: "you", domain: data.domain, text: data.transcript, extra: null };
         state.messages.push(youMessage);
@@ -2361,7 +2425,7 @@ function startPushToTalk() {
   const baseText = els.talkBox.value ? els.talkBox.value.replace(/\s+$/, "") + " " : "";
 
   els.micBtn.classList.add("recording");
-  setVoiceStatus(null, "Listening — tap the mic again when you're done…");
+  setVoiceStatus("listening", "Listening — tap the mic again when you're done…");
 
   recognition.onresult = (event) => {
     let transcript = "";
@@ -2709,7 +2773,11 @@ async function startWakewordListening() {
         // that speech has finished -- first the greeting, then each reply.
         // Ends when a turn gets no question within FOLLOWUP_WINDOW_MS.
         const label = wakewordLabel(detected.name);
-        setVoiceStatus("heard", `"${label}" — connecting…`);
+        // The greeting is genuinely playing right now (gate = its promise,
+        // still pending) while the next socket connects in the background --
+        // that's the "answering" state, not "listening", even though no
+        // reply has been generated yet; see voiceStatusIconMarkup().
+        setVoiceStatus("speaking", `"${label}" — one moment…`);
         let gate = speakAndWait(WAKEWORD_GREETING);
         let firstTurn = true;
         while (voice.wakewordListening) {
@@ -2719,7 +2787,7 @@ async function startWakewordListening() {
               captureMicPcm(send).then((stop) => { stopper = stop; });
               return () => { if (stopper) stopper(); };
             },
-            () => setVoiceStatus("heard", firstTurn ? `"${label}" — go ahead…` : "Listening — ask a follow-up…"),
+            () => setVoiceStatus("listening", firstTurn ? `"${label}" — go ahead…` : "Listening — ask a follow-up…"),
             { gate, idleTimeoutMs: FOLLOWUP_WINDOW_MS }
           );
           firstTurn = false;

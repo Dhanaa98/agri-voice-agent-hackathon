@@ -1676,6 +1676,17 @@ async function sendMessage(overrideText, farmName) {
   els.convoLog.appendChild(hint);
   els.convoLog.scrollTop = els.convoLog.scrollHeight;
 
+  // Doesn't abort the request -- the server may already be mid-LLM-call,
+  // and cutting it off would just waste that work and still leave the
+  // farmer with no answer. This only tells them it's still working
+  // instead of leaving "thinking…" sitting there with no sign of life
+  // (2026-09-28, explicit user choice: "have a timeout of 30s ... say it
+  // took longer to process, kindly wait").
+  const slowNoticeTimer = setTimeout(() => {
+    hint.textContent = "Still working on it — taking longer than usual, please wait…";
+    els.convoLog.scrollTop = els.convoLog.scrollHeight;
+  }, 30_000);
+
   // Location is only ever meaningful to a weather-routed question, but the
   // farmer doesn't pick the domain anymore -- send it whenever the box has
   // a value and let the server ignore it for non-weather replies.
@@ -1694,10 +1705,12 @@ async function sendMessage(overrideText, farmName) {
       body: JSON.stringify(payload),
     });
     const data = await resp.json();
+    clearTimeout(slowNoticeTimer);
     hint.remove();
     if (youMessage) youMessage.domain = data.domain;
     handleAgentReply(data, { spoken: false, retryText: text });
   } catch (err) {
+    clearTimeout(slowNoticeTimer);
     hint.remove();
     addMessage("error", null, "Couldn't reach the assistant. Check your connection and try again.");
   }
@@ -2067,8 +2080,10 @@ const WAKEWORD_GREETING = "Hey, I'm the farm assistant. How can I help you today
 // A wakeword opens a conversation, not a single question: after each
 // answer the assistant keeps listening for a follow-up without needing the
 // wakeword again. If nothing is asked within this window, it says so and
-// drops back to wakeword-only listening.
-const FOLLOWUP_WINDOW_MS = 30_000;
+// drops back to wakeword-only listening. Was 30s; raised to 1 minute
+// (2026-09-28, explicit user choice) -- 30s was ending the conversation
+// while a farmer was still mid-thought/distracted for a moment.
+const FOLLOWUP_WINDOW_MS = 60_000;
 const CONVERSATION_END_TEXT = "It seems you are no longer there. Ask me anything when you need.";
 
 const voice = {
@@ -2281,6 +2296,7 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
 
     let stopCapture = null;
     let idleTimer = null;
+    let thinkingSlowTimer = null;
     let finished = false;
     const outcome = { gotResult: false, timedOut: false, speech: null, endConversation: false };
 
@@ -2326,13 +2342,24 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
         if (stopCapture) { stopCapture(); stopCapture = null; }
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
         setVoiceStatus("thinking", data.transcript ? `"${data.transcript}"` : "Thinking…");
+        // Doesn't cancel anything server-side -- the server may already be
+        // mid-LLM-call, and there's no "give up" signal to send it anyway
+        // (2026-09-28, explicit user choice, same as the typed-chat
+        // version of this in sendMessage()). Just tells the farmer it's
+        // still working instead of the row sitting on the transcript text
+        // with no sign of life if a reply takes a while.
+        thinkingSlowTimer = setTimeout(() => {
+          setVoiceStatus("thinking", "Still working on it — taking longer than usual, please wait…");
+        }, 30_000);
         return;
       } else if (data.type === "error") {
+        if (thinkingSlowTimer) { clearTimeout(thinkingSlowTimer); thinkingSlowTimer = null; }
         setVoiceStatus(null, data.message || "Voice input error.");
         setTimeout(hideVoiceStatus, 3000);
       } else if (data.type === "result") {
         if (finished) return;
         outcome.gotResult = true;
+        if (thinkingSlowTimer) { clearTimeout(thinkingSlowTimer); thinkingSlowTimer = null; }
         // Safety net -- normally already stopped by "transcribed" above.
         if (stopCapture) { stopCapture(); stopCapture = null; }
         const youMessage = { kind: "you", domain: data.domain, text: data.transcript, extra: null };
@@ -2351,6 +2378,7 @@ function streamPcmToVoiceSocket(onFrameSource, onReady, opts = {}) {
       if (finished) return;
       finished = true;
       if (idleTimer) clearTimeout(idleTimer);
+      if (thinkingSlowTimer) clearTimeout(thinkingSlowTimer);
       if (stopCapture) stopCapture();
       voice.streaming = false;
       voice.voiceSocket = null;

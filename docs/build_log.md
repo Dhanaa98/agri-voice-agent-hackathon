@@ -366,6 +366,43 @@ Running log of build progress for this project at
   its name/location survive a clear while `chat_history` and `transcript`
   both come back empty; checked the button doesn't cause horizontal
   overflow at 375px mobile width.
+- **Unique farm names, a 30s "still working" notice, and 1-minute session
+  inactivity (2026-09-28).** Three explicit user requests from the same
+  message, all done together:
+  1. **Unique farm names.** Both adding and renaming now check for a
+     case-insensitive collision against every OTHER farm (`_name_collides()`,
+     farmer_server.py) -- renaming a farm to its own current name is a
+     harmless no-op, not flagged. On collision, the farmer is asked to
+     give a different name instead of a duplicate being silently created;
+     two new `SessionState` fields (`pending_new_farm_name`,
+     `pending_rename`) hold what's needed to finish once a unique name
+     comes back, and re-prompt (rather than give up) if the replacement
+     ALSO collides. An auto-generated default name ("add a farm" with no
+     name given) is now picked collision-free too
+     (`_unique_default_name()`, increments past any taken "Farm N" rather
+     than ever prompting the farmer about a name they never said).
+  2. **A "still working" notice after 30s.** Both the typed/voice chat
+     "thinking…" indicator and the new voice "thinking" status
+     (2026-09-28's listening/thinking/speaking indicators) now switch to
+     "Still working on it — taking longer than usual, please wait…" if
+     30 seconds pass with no reply, instead of sitting on stale text with
+     no sign of life. Deliberately does NOT abort or retry the request --
+     the server may already be mid-LLM-call, and cutting it off would
+     just waste that work and still leave the farmer with nothing.
+  3. **Session inactivity 30s -> 1 minute.** `FOLLOWUP_WINDOW_MS`
+     (farmer.html) -- how long a voice conversation keeps listening for a
+     follow-up before dropping back to wakeword-only listening and saying
+     the "seems you're no longer there" goodbye -- raised from 30,000ms
+     to 60,000ms; 30s was ending conversations while a farmer was still
+     mid-thought.
+  Verified end-to-end: add "Home" twice -> second attempt correctly
+  prompts instead of creating a duplicate; supplying a unique name
+  completes the add, with the location given in the FIRST (collided)
+  attempt still applied; renaming into a collision prompts the same way;
+  renaming a farm to its own current name is correctly treated as a
+  no-op, not a collision; an auto-generated default name correctly skips
+  past an already-taken "Farm N" (tested with "Farm 1"/"Farm 3" existing
+  and "add another farm" landing on "Farm 4", not colliding "Farm 3").
 - **Consolidated from two wakewords to one (2026-09-28).** User's explicit
   choice: "i am gonna use only one - hey green" -- everything else
   unchanged ("everything else is the same ... dont change anything

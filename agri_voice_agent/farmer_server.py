@@ -162,6 +162,19 @@ class SessionState:
     # is detected rather than deleting whatever now happens to sit at
     # that index.
     pending_farm_deletion: tuple[int, str] | None = None
+    # (location,) held while waiting for a unique name for a NEW farm --
+    # the name the farmer explicitly gave collided (case-insensitively)
+    # with an existing farm. A 1-tuple (not a bare `str | None`) so an
+    # empty-string location ("add a farm called Home" with no place) is
+    # distinguishable from "nothing pending" -- see _add_farm_reply().
+    # Farm names are now kept unique across a farmer's whole list
+    # (2026-09-28, explicit user choice).
+    pending_new_farm_name: tuple[str] | None = None
+    # (farm index, old name) held while waiting for a unique REPLACEMENT
+    # name after a rename collided with a DIFFERENT existing farm.
+    # Renaming a farm to its own current name is a harmless no-op, not a
+    # collision -- see _name_collides()'s exclude_idx.
+    pending_rename: tuple[int, str] | None = None
     # Per-session Plant diagnostic conversation -- PlantAgent's own
     # _active_sessions dict is keyed by whatever session_id we pass it, so
     # this just needs to consistently pass the SAME id for a given browser
@@ -307,6 +320,29 @@ def _find_farm_by_name(name: str) -> int | None:
         if f.name.strip().lower() == lowered:
             return i
     return None
+
+
+def _name_collides(name: str, exclude_idx: int | None = None) -> bool:
+    """True if `name` (case-insensitive) already belongs to some OTHER
+    farm -- `exclude_idx` lets a rename check against every farm except
+    the one actually being renamed, so "rename Home to Home" is a
+    harmless no-op, not flagged as a collision with itself."""
+    lowered = name.strip().lower()
+    return any(
+        i != exclude_idx and f.name.strip().lower() == lowered for i, f in enumerate(_farm_state.farms)
+    )
+
+
+def _unique_default_name() -> str:
+    """"Farm N" for the next N that isn't already taken -- used only when
+    the farmer didn't give a name at all ("add a farm"), so an
+    auto-generated default never collides either (e.g. after "Farm 2" was
+    deleted and a new farm auto-names into that same slot while a
+    differently-numbered "Farm 2" still exists from some other add)."""
+    n = len(_farm_state.farms) + 1
+    while _name_collides(f"Farm {n}"):
+        n += 1
+    return f"Farm {n}"
 
 
 def _find_farm_in_speech(text: str) -> int | None:
@@ -940,7 +976,22 @@ def _resolve_farm_reference(session: SessionState, name: str) -> int | None:
 
 def _add_farm_reply(name: str, location: str, text: str, session: SessionState) -> dict:
     """Shared by the add-farm regex and interpret()'s add_farm action."""
-    name = name or f"Farm {len(_farm_state.farms) + 1}"
+    explicit_name = bool(name)
+    name = name or _unique_default_name()
+    # Only prompt when the farmer actually SAID this name -- an
+    # auto-generated default is picked collision-free by
+    # _unique_default_name() already, so there's nothing to ask about.
+    if explicit_name and _name_collides(name):
+        session.pending_new_farm_name = (location,)
+        existing = ", ".join(f.name for f in _farm_state.farms)
+        return _reply(
+            "general",
+            f"You already have a farm called {name}. What would you like to name this new one? "
+            f"(Existing: {existing}.)",
+            None,
+            text,
+            session.session_id,
+        )
     idx = _farm_state.add_farm(name, location=location, location_confirmed=bool(location))
     session.active_farm_index = idx
     _farm_store.save(config.FARM_STATE_PATH)
@@ -1039,6 +1090,21 @@ def _handle_farm_management(text: str, session: SessionState, mid_plant: bool = 
             names = ", ".join(f.name for f in _farm_state.farms) or "none yet"
             return _reply(
                 "general", f"I couldn't find a farm called {old}. Your farms are: {names}.", None, text, session.session_id
+            )
+        # Farm names are kept unique (2026-09-28, explicit user choice:
+        # "when renaming ... if it is the same name, prompt to change it
+        # to be unique"). exclude_idx=idx so renaming a farm to its own
+        # current name is a harmless no-op, not flagged as a collision.
+        if _name_collides(new, exclude_idx=idx):
+            session.pending_rename = (idx, _farm_state.farms[idx].name)
+            existing = ", ".join(f.name for f in _farm_state.farms)
+            return _reply(
+                "general",
+                f"You already have a farm called {new}. What would you like to rename "
+                f"{_farm_state.farms[idx].name} to instead? (Existing: {existing}.)",
+                None,
+                text,
+                session.session_id,
             )
         _farm_state.farms[idx].name = new
         _farm_store.save(config.FARM_STATE_PATH)
@@ -1146,6 +1212,8 @@ def _answer(
         session.pending_farm_question = None
         session.pending_farm_deletion = None
         session.pending_new_farm_location = None
+        session.pending_new_farm_name = None
+        session.pending_rename = None
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
 
@@ -1213,6 +1281,61 @@ def _answer(
                 farm,
                 text,
                 session.session_id,
+            )
+
+    # The farmer is giving a unique name after "you already have a farm
+    # called X" -- see _add_farm_reply(). Re-prompts (keeps this pending)
+    # if the new name ALSO collides, rather than silently creating a
+    # duplicate or guessing.
+    if not mid_plant_conversation and session.pending_new_farm_name is not None:
+        (location,) = session.pending_new_farm_name
+        candidate = _clean_farm_phrase(text)
+        if not candidate:
+            return _reply(
+                "general", "Sorry, what would you like to name it?", None, text, session.session_id
+            )
+        if _name_collides(candidate):
+            existing = ", ".join(f.name for f in _farm_state.farms)
+            return _reply(
+                "general",
+                f"You already have a farm called {candidate} too. Try a different name? (Existing: {existing}.)",
+                None,
+                text,
+                session.session_id,
+            )
+        session.pending_new_farm_name = None
+        return _add_farm_reply(candidate, location, text, session)
+
+    # The farmer is giving a unique replacement name after "you already
+    # have a farm called X" during a rename -- see the rename branch in
+    # _handle_farm_management(). Same re-prompt-on-collision behavior.
+    if not mid_plant_conversation and session.pending_rename is not None:
+        idx, old_name = session.pending_rename
+        if not (0 <= idx < len(_farm_state.farms)) or _farm_state.farms[idx].name != old_name:
+            # The farm was deleted or already renamed from under this
+            # pending question (e.g. from another tab) -- don't keep
+            # asking about something that no longer matches.
+            session.pending_rename = None
+        else:
+            candidate = _clean_farm_phrase(text)
+            if not candidate:
+                return _reply(
+                    "general", f"Sorry, what would you like to rename {old_name} to?", None, text, session.session_id
+                )
+            if _name_collides(candidate, exclude_idx=idx):
+                existing = ", ".join(f.name for f in _farm_state.farms)
+                return _reply(
+                    "general",
+                    f"You already have a farm called {candidate} too. Try a different name? (Existing: {existing}.)",
+                    None,
+                    text,
+                    session.session_id,
+                )
+            session.pending_rename = None
+            _farm_state.farms[idx].name = candidate
+            _farm_store.save(config.FARM_STATE_PATH)
+            return _reply(
+                "general", f"Renamed {old_name} to {candidate}.", _farm_state.farms[idx], text, session.session_id
             )
 
     # Farm management (add/rename/relocate/delete/list farms) -- checked

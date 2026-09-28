@@ -39,9 +39,16 @@ _CROP_NAME_ALIASES = {
 # suitable" verdict question. Detecting the phrasing lets the prompt
 # actually tell the model which one this is, instead of leaving it to
 # infer that from instructions alone.
+# REAL BUG FOUND AND FIXED (2026-09-28, reported live: "how do I grow"
+# questions kept getting the temperature/warnings verdict instead of
+# actual steps): this only matched "how do/can/would/should I", missing
+# very ordinary phrasings with a different subject ("how do YOU grow
+# rice", "how IS rice grown") or no "how" at all ("what's the best way to
+# grow rice", "the process for growing onions").
 _HOW_TO_RE = re.compile(
-    r"\b(?:how (?:do|can|would|should) i|how to|explain|steps? (?:to|for)|guide (?:to|for)|"
-    r"teach me|walk me through)\b",
+    r"\b(?:how (?:do|can|would|should|is|are)|how to|explain|steps? (?:to|for)|"
+    r"guide (?:to|for)|teach me|walk me through|best way (?:to|of)|"
+    r"(?:process|method) (?:to|for|of))\b",
     re.IGNORECASE,
 )
 
@@ -238,6 +245,27 @@ class CropAgent:
             # truly relevant), with an explicit instruction not to lead
             # with or default to it, unlike the suitability-question
             # prompt below where the assessment IS the answer.
+            #
+            # REAL GAP FOUND (2026-09-28, live during this same fix: the
+            # free-tier Gemini key returned 503 UNAVAILABLE repeatedly
+            # while testing). Growing STEPS only ever come from the LLM --
+            # crop_data.py has suitability parameters, not cultivation
+            # instructions -- so when Gemini genuinely can't be reached,
+            # there is no real fallback for the actual question asked.
+            # The old fallback (bare `deterministic_summary`) silently
+            # swapped in the suitability line with no explanation, which
+            # is exactly what "just says the same mention of temperature
+            # and warnings" described -- looked like the code ignoring the
+            # question, when it was actually a connectivity failure.
+            # Saying so explicitly is honest instead of silently
+            # substituting a different answer. A separate variable, not a
+            # `deterministic_summary` reassignment -- the prompt below
+            # still needs the RAW assessment as grounding data, not this
+            # fallback framing.
+            fallback_override = (
+                "I can't look up growing steps right now -- having trouble connecting. "
+                f"Here's what I can tell you from your farm's conditions: {deterministic_summary}"
+            )
             prompt = (
                 "Answer the farmer's HOW-TO question in 3-5 short spoken sentences: the "
                 "practical steps to grow this crop (soil prep, spacing, watering, timing, "
@@ -249,6 +277,37 @@ class CropAgent:
                 f"Farm context:\n{farm.to_prompt_context()}\n\n"
                 f"{farm.recent_chat_context('crop')}\n\n"
                 f"Background assessment (for context only, not the answer):\n{deterministic_summary}"
+            )
+            deterministic_summary = fallback_override
+        elif not names:
+            # REAL BUG FOUND AND FIXED (2026-09-28, reported live: "that
+            # just increases the text and what it should give are the
+            # plant names only"). "What should I grow" with no crop named
+            # used to fall into the generic branch below, which feeds the
+            # LLM the full per-crop reasoning AND disease warnings and
+            # tells it to answer "only from the assessment" -- so it
+            # dutifully recited all of it, turning a simple name list into
+            # a wall of temperature figures and fungal warnings nobody
+            # asked about. A recommendation request wants names, not a
+            # report; a farmer who wants to know WHY or about risks for
+            # one of them can just ask about that crop specifically
+            # (routes to the `names:`-populated branches above, which
+            # still give the full reasoning).
+            suitable_names = [a.crop for a in assessments if a.suitable]
+            fallback_names = suitable_names or [a.crop for a in assessments]
+            deterministic_summary = (
+                f"You could grow: {', '.join(fallback_names)}."
+                if fallback_names
+                else "None of the crops I track are well suited to your farm's current conditions."
+            )
+            prompt = (
+                "The farmer asked what to grow, with no specific crop named. Reply with JUST the "
+                "crop names below, in one short spoken sentence (e.g. \"Rice, okra and chili would "
+                "all do well right now.\"). Do NOT explain why, do NOT mention temperature or "
+                "rainfall numbers, and do NOT mention any disease warnings -- the farmer can ask "
+                "about a specific crop for that. If none are suitable, say so briefly and suggest "
+                "asking about a specific crop instead.\n\n"
+                f"Crops to mention: {', '.join(fallback_names) or '(none suitable)'}"
             )
         else:
             prompt = (

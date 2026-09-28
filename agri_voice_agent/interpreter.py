@@ -58,9 +58,12 @@ def interpret(text: str, history: list[tuple[str, str]], farms: list[tuple[str, 
         "JSON keys:\n"
         '"action": one of the above.\n'
         '"question": for weather/crop/plant, the farmer\'s request rewritten to make sense on its own '
-        "using the conversation -- EXCEPT when they're just stating what they're already growing, "
-        "where this should stay close to their own wording (e.g. keep \"I'm growing rice\" as-is, "
-        "don't turn it into \"is rice suitable?\").\n"
+        "using the conversation. Two exceptions -- keep the farmer's own wording/framing in both "
+        "cases, don't rephrase into a different kind of question: (1) if they're just stating what "
+        "they're already growing (e.g. keep \"I'm growing rice\" as-is, don't turn it into \"is rice "
+        "suitable?\"); (2) if they're asking HOW to grow/plant/care for something -- steps, method, "
+        "process -- keep that \"how\" framing (e.g. \"how is rice grown\" stays a how-to question, "
+        "don't rewrite it as \"is rice suitable for my farm?\", which asks something different).\n"
         '"farm": for select_farm (required) or weather/crop/plant (only if they named one), the exact '
         "farm name from the list above. Match loosely -- a location or a misheard name counts.\n"
         '"name": for add_farm, ONLY if the farmer explicitly named the farm (e.g. "called North '

@@ -55,9 +55,23 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
         "suitable crop", "recommend a crop", "should i grow",
         # Bare words -- ASR regularly mangles the start of a question
         # ("what crops" came back as "But crops I have"), so full-phrase
-        # matches alone missed real crop questions.
-        "crop", "grow", "planting", "harvest", "sow", "sowing", "seed",
-        "cultivate",
+        # matches alone missed real crop questions. REAL BUG FOUND AND
+        # FIXED (2026-09-28, reported live: "how do I grow" questions
+        # mostly getting "didn't catch that"): word-boundary matching
+        # (added 2026-09-27 to stop "rot" matching inside "rotation") means
+        # "grow" only matches the exact word "grow", NOT "growing"/"grown"
+        # -- a very common way to actually phrase this ("how is rice
+        # grown", "what's involved in growing tomatoes"). Same gap for
+        # "plant" (the bare verb was never in this list at all, only the
+        # full phrases above) and "harvest"'s own inflections. Every one
+        # of these that falls through to the LLM interpreter instead of
+        # this fast keyword path is also one more chance to hit "didn't
+        # catch that" outright if the free-tier Gemini call is
+        # rate-limited/briefly down, which it demonstrably can be -- see
+        # docs/build_log.md.
+        "crop", "grow", "growing", "grown", "plant", "planting", "planted",
+        "harvest", "harvesting", "harvested", "sow", "sowing", "sown",
+        "seed", "cultivate", "cultivating",
     ],
     "weather": [
         "weather", "forecast", "rain", "raining", "rainfall", "temperature",

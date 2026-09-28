@@ -366,6 +366,74 @@ Running log of build progress for this project at
   its name/location survive a clear while `chat_history` and `transcript`
   both come back empty; checked the button doesn't cause horizontal
   overflow at 375px mobile width.
+- **Crop recommendation list too verbose, and "how do I grow X" mostly
+  failing or answering the wrong question (2026-09-28).** User reported
+  live: "what should I grow" gives a list "with warnings as well ... that
+  just increases the text", should be "plant names only"; and "how to
+  grow some individual plant" mostly says "didn't catch that", or just
+  repeats "the same mention of the temperature and warnings, not the
+  actual steps". Three separate, compounding causes, all fixed:
+  1. **Recommendation list too verbose.** `CropAgent.handle()`'s
+     no-crop-named branch fed the LLM the full per-crop reasoning AND
+     disease warnings and said "answer only from the assessment" -- so it
+     dutifully recited all of it. Added a dedicated branch (`elif not
+     names:`) for this exact case: a short "just the crop names, no
+     reasoning, no warnings" prompt, with a matching plain-names fallback
+     ("You could grow: tomato, chili, rice.") for when Gemini is
+     unavailable. A specific crop question ("is rice suitable") still
+     gets the full reasoning, unchanged -- only the bare recommendation
+     list was too noisy.
+  2. **Routing gap, the "didn't catch that" cause.** `detect_domain()`'s
+     crop keyword list had "grow" and "planting" but not their own
+     inflections -- word-boundary matching (added 2026-09-27) means
+     "grow" only matches the exact word "grow", NOT "growing"/"grown",
+     and bare "plant" wasn't in the list at all. So "how is rice grown",
+     "tell me how to plant rice", "guide to growing tomatoes" all missed
+     the fast keyword path and fell through to the LLM interpreter --
+     which, with the free-tier Gemini key intermittently returning 503
+     UNAVAILABLE (reproduced repeatedly live while fixing this), has a
+     real chance of failing outright, and `_answer()`'s catch-all for
+     that is the generic "Sorry, I didn't catch that." Added "growing",
+     "grown", "plant", "planting", "planted", "harvesting", "harvested",
+     "sowing", "sown", "cultivating" to the crop keyword list -- verified
+     these route to "crop" without disturbing plant-domain symptom
+     detection (checked first in `_DOMAIN_KEYWORDS` order) or weather.
+  3. **Wrong-question answers, when it DID reach crop.py.** Two further
+     gaps once routing worked: `_HOW_TO_RE` (crop.py) only matched "how
+     do/can/would/should I", missing "how do YOU grow", "how IS rice
+     grown", "what's the best way to grow" -- broadened to cover those.
+     And `interpreter.py`'s question-rewrite instruction had no guidance
+     to preserve how-to framing, so a message that DID reach the
+     interpreter (rather than the fast keyword path) risked being
+     rewritten from "how is rice grown" into a plain suitability question
+     like "is rice suitable?" before it ever reached crop.py, which
+     `is_how_to_question()` would then correctly fail to detect since the
+     framing was already gone. Added an explicit exception alongside the
+     existing growing-statement one.
+  4. **Honest fallback, found live while testing #3 above (the free-tier
+     key really was down for an extended stretch during this fix).** The
+     how-to branch's Gemini-unavailable fallback was the bare
+     `deterministic_summary` -- i.e. exactly the "same mention of
+     temperature and warnings, not the actual steps" the user described,
+     with zero indication anything had gone wrong. Growing steps only
+     ever come from the LLM (crop_data.py has suitability parameters, not
+     cultivation instructions), so there genuinely is no deterministic
+     answer to the question actually asked when Gemini can't be reached
+     -- silently substituting the suitability line looked exactly like
+     the assistant ignoring the question. Now says so explicitly ("I
+     can't look up growing steps right now -- having trouble connecting.
+     Here's what I can tell you from your farm's conditions: ...") via a
+     separate fallback variable built AFTER the prompt (which still needs
+     the raw, unprefixed assessment as grounding data).
+  Verified end-to-end through the real server (not just the isolated
+  agent): "what should I grow" -> "You could grow: tomato, chili, rice,
+  okra, onion." (no reasoning, no warnings); "how is rice grown", "tell
+  me how to plant rice", "guide to growing tomatoes" all now correctly
+  route to `crop` (previously several missed the fast path entirely) and,
+  live against the actually-down Gemini key, return the new honest
+  fallback text instead of either "didn't catch that" or a silent verdict
+  substitution; "is rice suitable for my farm" confirmed unaffected,
+  still gets full reasoning.
 - **Four distinct voice states, each with its own color and animation
   (2026-09-28).** User asked for listening-for-wakeword / listening-to-
   speech / thinking / answering to each look and feel different, not

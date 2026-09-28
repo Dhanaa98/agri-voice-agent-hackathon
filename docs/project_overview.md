@@ -1,16 +1,19 @@
 # Project Overview
 
-Building a multi-wakeword agricultural voice agent for the AssemblyAI Voice Agent
+Building an agricultural voice agent for the AssemblyAI Voice Agent
 Hackathon on lablab.ai (Sep 1-30 2026, $10k prize pool: $5k cash + $5k AssemblyAI
 credits). Full spec lives in AGRI_VOICE_AGENT_BRIEF.md at the project root
 (D:\Dhananjaya\Voice project 2).
 
-Two wakewords ("Hey Green" for Weather+Crop, "Hey Doc" for Plant Health --
-originally three separate wakewords including "Hey Weather"/"Hey Crop"/"Hey Plant",
-merged/renamed as the project evolved, see docs/build_log.md) route to domain agents
-sharing one `farm_state` object, so answers cross-reference each other (e.g. weather
-context shifts disease diagnosis). "Hey Doc" is voice-only conversational disease
-diagnosis (no photo) — the primary differentiator, gets the most build time.
+One wakeword, "Hey Green" (originally three separate wakewords --
+"Hey Weather"/"Hey Crop"/"Hey Plant" -- merged to two ("Hey Green" for
+Weather+Crop, "Hey Doc" for Plant Health), then consolidated to just
+"Hey Green" covering all three domains, 2026-09-28; see docs/build_log.md
+for the full history) routes to domain agents sharing one `farm_state`
+object, so answers cross-reference each other (e.g. weather context
+shifts disease diagnosis). Voice-only conversational disease diagnosis
+(no photo) is still the primary differentiator and gets the most build
+time -- it just no longer has its own dedicated wakeword phrase.
 
 **Why:** Builder has real wakeword-model/ML experience (not just API integration)
 and a horticulture/agriculture academic background — domain knowledge most hackathon

@@ -1,4 +1,6 @@
-"""Plant disease knowledge base for the "Hey Doc" diagnostic conversation.
+"""Plant disease knowledge base for the plant-diagnosis conversation
+(reached via "Hey Green", no longer its own separate "Hey Doc" wakeword
+as of 2026-09-28).
 
 Two layers, per the project's decided approach (see build log):
 

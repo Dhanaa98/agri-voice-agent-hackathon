@@ -1,24 +1,23 @@
 """Cross-domain intent detection, shared by the farmer dashboard's chat and
-the voice pipeline's combined "Hey Green" wakeword.
+the voice pipeline's single "Hey Green" wakeword.
 
 Originally built only for the farmer dashboard (no wakeword there -- the
 farmer types/speaks freely, so something has to catch "what should I
 plant" arriving while a Weather-routed reply was still last-active). The
 voice pipeline (main.py) used to need none of this, since each of its
-three wakewords ("Hey Weather"/"Hey Crop"/"Hey Plant") picked the domain
-directly. That's no longer true for Weather/Crop specifically: they were
-merged into one wakeword -- originally spoken as "Hey Field", now "Hey
-Green" (2026-09-23), the underlying merged-domain concept and the
-`resolve_field_domain()` function name never changed, only the phrase --
-see wakeword/router.py and main.py's `resolve_field_domain()`, covering
-the many everyday farm questions that don't cleanly sort into "obviously
-weather" or "obviously crop" before the farmer has even spoken -- "Hey
-Green" fires, THEN the transcript is routed via detect_domain() same as
-dashboard chat. "Hey Doc" (the plant-diagnosis wakeword; internally still
-the "plant" domain) stays its own separate wakeword (a different
-conversation shape -- multi-turn diagnosis needs a symptom description,
-not a one-shot question -- so it was kept apart rather than folded in
-too).
+original three wakewords ("Hey Weather"/"Hey Crop"/"Hey Plant") picked the
+domain directly. They were later merged down to two -- Weather+Crop under
+one wakeword (spoken as "Hey Field", then "Hey Green" from 2026-09-23),
+Plant kept separate as "Hey Doc" since disease diagnosis is a different
+conversation shape (multi-turn, symptom-driven, not one-shot) -- and then,
+2026-09-28, down to just ONE: "Hey Green" now covers all three domains,
+explicit user choice ("i am gonna use only one"). `resolve_field_domain()`
+(intent.py, still named for the wakeword's original "field" internal key,
+not renamed on top of the wakeword-count change) resolves the transcript
+to weather, crop, OR plant via detect_domain() -- the same mechanism the
+farmer dashboard's typed chat already used for full three-way routing, so
+this only ever needed to stop artificially excluding "plant" from its
+result, not a new routing mechanism.
 
 Keyword matching is the fast path. A message no keyword matches returns
 None here; farmer_server.py then hands it to interpreter.py, which reads
@@ -119,20 +118,26 @@ def suggest_redirect(text: str, active_domain: str) -> str | None:
 
 
 def resolve_field_domain(text: str) -> str:
-    """Resolve a "Hey Green" utterance to "weather" or "crop" -- see this
-    module's docstring. Never returns "plant" (that keeps its own separate
-    wakeword) and never returns None (unlike detect_domain/suggest_redirect,
-    "Hey Green" already committed to being answered by ONE of these two
-    domains the moment the wakeword fired, so ambiguous wording still needs
-    a decision, not a non-answer).
+    """Resolve a "Hey Green" utterance to "weather", "crop", or "plant" --
+    see this module's docstring. Never returns None (unlike detect_domain/
+    suggest_redirect, "Hey Green" already committed to being answered by
+    ONE of these three domains the moment the wakeword fired, so ambiguous
+    wording still needs a decision, not a non-answer).
+
+    Used to only ever return "weather" or "crop" -- "plant" had its own
+    separate "Hey Doc" wakeword. Consolidated to one wakeword (2026-09-28,
+    explicit user choice), so this now defers to detect_domain()'s full
+    three-way keyword match, same as farmer_server.py's chat routing
+    already does; only the "nothing matched at all" fallback below is
+    specific to this being a committed wakeword turn.
 
     Defaults to "weather" when nothing matches -- an open-ended check-in
     like "how's it going" or "what's happening out there" reads more like a
-    conditions question than a planting one, and Weather's answer is also
-    the input Crop's own suitability scoring depends on, so it's the safer
-    unsure-what-they-meant default of the two.
+    conditions question than a planting or symptom one, and Weather's
+    answer is also the input Crop's own suitability scoring depends on, so
+    it's the safer unsure-what-they-meant default of the three.
     """
     detected = detect_domain(text)
-    if detected in ("weather", "crop"):
+    if detected in ("weather", "crop", "plant"):
         return detected
     return "weather"

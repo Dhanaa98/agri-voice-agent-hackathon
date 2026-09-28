@@ -1,10 +1,10 @@
 """Microphone audio capture, shared by the wakeword router and ASR.
 
 Both consumers need the same continuous 16kHz mono PCM stream: the
-wakeword router scores it frame-by-frame looking for "Hey Green" /
-"Hey Doc", and once triggered, ASR consumes it to transcribe
-the following speech. `MicrophoneStream` exposes raw frames via a callback
-so `main.py` can fan them out to whichever consumer is currently active.
+wakeword router scores it frame-by-frame looking for "Hey Green", and
+once triggered, ASR consumes it to transcribe the following speech.
+`MicrophoneStream` exposes raw frames via a callback so `main.py` can fan
+them out to whichever consumer is currently active.
 """
 
 from __future__ import annotations

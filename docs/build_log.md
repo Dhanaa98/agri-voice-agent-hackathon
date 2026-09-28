@@ -366,6 +366,64 @@ Running log of build progress for this project at
   its name/location survive a clear while `chat_history` and `transcript`
   both come back empty; checked the button doesn't cause horizontal
   overflow at 375px mobile width.
+- **Consolidated from two wakewords to one (2026-09-28).** User's explicit
+  choice: "i am gonna use only one - hey green" -- everything else
+  unchanged ("everything else is the same ... dont change anything
+  else"). Previously "Hey Green" covered Weather+Crop and "Hey Doc" was a
+  separate wakeword for Plant, kept apart because disease diagnosis is a
+  different conversation shape (multi-turn, symptom-driven). Now "Hey
+  Green" alone covers all three domains.
+  This turned out to be a small change precisely because the
+  architecture was already built generically: `intent.py`'s
+  `resolve_field_domain()` (resolves a "Hey Green" transcript to a real
+  domain once ASR returns text) only had to stop artificially excluding
+  "plant" from its result -- it already called `detect_domain()`, the
+  SAME full three-way keyword matcher farmer_server.py's typed chat
+  always used, so no new routing logic was needed, just removing one
+  exclusion. Farther down the stack it's even less code: farmer_server.py
+  never routed by which wakeword fired at all -- the `/voice` WebSocket
+  handler doesn't take a domain/wakeword parameter, so weather/crop/plant
+  routing there was ALREADY domain-agnostic post-transcription. The one
+  real server-side line was `/capabilities`'s `wakeword_models` dict,
+  which listed `("field", "plant")`; trimmed to `("field",)`.
+  `wakeword/router.py`'s `WakewordRouter` was also already a genuine
+  multi-model design (a dict keyed by domain name) -- shrinking
+  `DOMAINS`/`DEFAULT_THRESHOLDS` from `("field", "plant")` to `("field",)`
+  was the entire functional change there. farmer.html's own wakeword
+  pipeline (`loadWakewordModels()`, the `onFrame` classifier loop) was
+  ALSO already generic, iterating whatever names `/capabilities` reports
+  rather than hardcoding "field"/"plant" -- so once the server stopped
+  advertising a "plant" wakeword, the browser automatically stopped
+  loading/scoring a plant.onnx classifier with zero JS logic changes
+  needed there. Only genuinely NEW code: `main.py`'s VoiceAgentLoop (the
+  separate technical/CLI pipeline, same "field" -> real-domain resolution
+  mechanism) needed no code change either, for the same reason --
+  `_on_final_transcript()` already called `resolve_field_domain()`
+  generically.
+  What DID need touching, beyond that one `/capabilities` line: UI copy
+  in farmer.html (empty-state hint, enable-voice modal, the
+  no-wakeword-models error message, `wakewordLabel()`'s name->phrase
+  map) and static/index.html (the technical dashboard's idle hint) that
+  hardcoded mentioning both phrases; module/function docstrings across
+  wakeword/router.py, intent.py, main.py, farmer_server.py, plant.py,
+  plant_data.py, and audio_input.py that described the old two-wakeword
+  split as current architecture; and docs/ARCHITECTURE.md,
+  docs/USER_GUIDE.md, docs/project_overview.md (the "current, accurate"
+  docs from the 2026-09-27 documentation pass) updated to match --
+  README.md and AGRI_VOICE_AGENT_BRIEF.md deliberately left as-is, both
+  already flagged as historical build-plan records, not current-behavior
+  docs.
+  Verified: `resolve_field_domain()` now correctly resolves a plant-
+  symptom transcript to "plant" (previously hardcoded to only ever return
+  "weather"/"crop"); `/capabilities` on a live server reports
+  `{"wakeword_models": {"field": true}}`, no "plant" key at all; loaded
+  the real page in a browser and confirmed "Hey Doc" appears nowhere in
+  the rendered text while "Hey Green" still does, with zero console/page
+  errors; confirmed a plant-symptom message sent through the real /chat
+  endpoint still correctly reaches the Plant agent (the underlying
+  domain-routing logic that "Hey Green" now relies on for all three
+  domains was never wakeword-specific to begin with, so this was really
+  confirming a pre-existing path, not a new one).
 - **Crop recommendation list too verbose, and "how do I grow X" mostly
   failing or answering the wrong question (2026-09-28).** User reported
   live: "what should I grow" gives a list "with warnings as well ... that

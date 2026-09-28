@@ -1304,7 +1304,7 @@
       <div class="convo-empty" id="convo-empty">
         <div class="empty-mark"><svg class="ic"><use href="#i-wheat"/></svg></div>
         <h4>How can I help on the farm today?</h4>
-        <p>Say <strong>"Hey Green"</strong> for weather and crops, <strong>"Hey Doc"</strong> for a sick plant, or type below.</p>
+        <p>Say <strong>"Hey Green"</strong> to ask about weather, crops, or a plant problem, or type below.</p>
         <div class="suggestions">
           <button type="button" class="suggestion" data-domain="weather" data-prompt="Will it rain tomorrow?"><svg class="ic"><use href="#i-weather"/></svg>Will it rain tomorrow?</button>
           <button type="button" class="suggestion" data-domain="crop" data-prompt="What should I plant now?"><svg class="ic"><use href="#i-crop"/></svg>What should I plant now?</button>
@@ -1351,7 +1351,7 @@
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="enable-voice-title">
     <div class="modal-icon"><svg class="ic"><use href="#i-mic"/></svg></div>
     <h3 id="enable-voice-title">Turn on hands-free voice?</h3>
-    <p>Say "Hey Green" or "Hey Doc" any time to ask a question without touching the screen. Your browser will ask for microphone access once.</p>
+    <p>Say "Hey Green" any time to ask a question without touching the screen. Your browser will ask for microphone access once.</p>
     <button class="modal-detect-btn" id="enable-voice-btn" type="button"><svg class="ic"><use href="#i-mic"/></svg>Enable voice</button>
     <div class="modal-foot">
       <button id="enable-voice-skip-btn" type="button">Not now, I'll type</button>
@@ -2467,14 +2467,19 @@ function stopPushToTalk() {
 // This is openWakeWord's actual 3-stage architecture, ported from its
 // Python reference implementation (openwakeword/utils.py's AudioFeatures
 // class) and verified against the real model files in a standalone Python
-// script before porting -- not a guess. Every wakeword's classifier .onnx
-// (field.onnx, plant.onnx) takes a stack of 16 audio EMBEDDINGS, not raw
-// audio, so raw mic samples have to run through two SHARED models first:
+// script before porting -- not a guess. The wakeword's classifier .onnx
+// (field.onnx -- just this one now; down from field.onnx+plant.onnx as of
+// 2026-09-28, one wakeword covering all three domains instead of two
+// separate ones) takes a stack of 16 audio EMBEDDINGS, not raw audio, so
+// raw mic samples have to run through two SHARED models first. This code
+// path stayed genuinely multi-classifier-capable throughout (see
+// loadWakewordModels()) -- going to one wakeword only meant /capabilities
+// reports one name instead of two, nothing here needed restructuring:
 //
 //   raw audio samples
-//     -> melspectrogram.onnx   (shared across all wakewords)
-//     -> embedding_model.onnx  (shared across all wakewords)
-//     -> your classifier .onnx (field.onnx / plant.onnx -- one per wakeword)
+//     -> melspectrogram.onnx   (shared feature extraction)
+//     -> embedding_model.onnx  (shared feature extraction)
+//     -> field.onnx            (the "Hey Green" classifier)
 //     -> confidence score
 //
 // Buffering/windowing constants below (1280-sample chunks, 480-sample
@@ -2708,7 +2713,7 @@ async function startWakewordListening() {
   const models = await loadWakewordModels();
   if (!models) {
     hideVoiceStatus();
-    addMessage("error", null, "No complete wakeword model set is available yet — field.onnx/plant.onnx plus the shared melspectrogram.onnx and embedding_model.onnx all need to be in the server's wakeword models folder.");
+    addMessage("error", null, "No complete wakeword model set is available yet — field.onnx plus the shared melspectrogram.onnx and embedding_model.onnx all need to be in the server's wakeword models folder.");
     return;
   }
 
@@ -2721,7 +2726,13 @@ async function startWakewordListening() {
   els.wakeIndicator.hidden = false;
   els.wakeIndicator.classList.add("active");
   els.wakeIndicatorLabel.textContent = "Listening";
-  const wakewordLabel = (n) => (n === "field" ? "Hey Green" : n === "plant" ? "Hey Doc" : n);
+  // Just "field" -> "Hey Green" now (down from also mapping "plant" ->
+  // "Hey Doc" as of 2026-09-28, one wakeword covering all three domains
+  // instead of two separate ones) -- kept as a name->phrase lookup rather
+  // than a hardcoded string since loadWakewordModels() is still genuinely
+  // multi-classifier-capable, so any other .onnx name dropped into the
+  // models folder still gets a sensible (if unlabeled) fallback here.
+  const wakewordLabel = (n) => (n === "field" ? "Hey Green" : n);
   // The idle "listening" state itself isn't shown in the voice-status row
   // -- the wake-indicator pill in the panel header already says "Listening"
   // compactly. The row is reserved for active feedback (connecting/go

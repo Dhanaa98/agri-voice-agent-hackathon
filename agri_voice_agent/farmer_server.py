@@ -2,8 +2,8 @@
 
 Separate from dashboard_server.py (the technical/judge-facing view over
 VoiceAgentLoop's continuous mic + wakeword pipeline, which uses its own
-"Hey Green"/"Hey Doc" wakewords -- see wakeword/router.py -- and is left
-untouched by this file's own single-chat routing).
+"Hey Green" wakeword -- see wakeword/router.py -- and is left untouched
+by this file's own single-chat routing).
 
 This server used to make the farmer click a Weather/Crop/Plant button
 before every question (mirroring the wakeword concept in click form). In
@@ -477,6 +477,16 @@ async def capabilities() -> dict:
     the StaticFiles mount below. Wakeword listening additionally needs
     mic_available (ASSEMBLYAI_API_KEY) since detecting the wakeword is only
     useful if the follow-up speech can then actually be transcribed.
+
+    Only "field" (the "Hey Green" wakeword) is listed here -- down from
+    ("field", "plant") as of 2026-09-28, explicit user choice to use a
+    single wakeword covering all three domains (see intent.py's
+    resolve_field_domain(), which now resolves "Hey Green" to weather,
+    crop, OR plant instead of only ever weather/crop). farmer.html's
+    loadWakewordModels() already just loads whatever names show up here
+    with a value of True, so this one-line change is what actually turns
+    off loading/scoring a "plant" classifier client-side -- no frontend
+    code needed touching for that part.
     """
     shared_models_present = (WAKEWORD_MODELS_DIR / "melspectrogram.onnx").exists() and (
         WAKEWORD_MODELS_DIR / "embedding_model.onnx"
@@ -487,7 +497,7 @@ async def capabilities() -> dict:
         "domains_available": {name: name in _agents for name in DOMAIN_AGENTS},
         "wakeword_models": {
             name: shared_models_present and (WAKEWORD_MODELS_DIR / f"{name}.onnx").exists()
-            for name in ("field", "plant")
+            for name in ("field",)
         },
     }
 

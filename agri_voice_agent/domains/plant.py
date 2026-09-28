@@ -1,4 +1,7 @@
-"""Plant disease diagnostic conversation agent ("Hey Doc").
+"""Plant disease diagnostic conversation agent -- reached via "Hey Green"
+(routed here like any other domain, see intent.py's resolve_field_domain();
+no longer has its own separate wakeword as of 2026-09-28, previously
+"Hey Doc").
 
 Voice-only, multi-turn diagnosis: the farmer describes a symptom, the
 agent asks 1-2 targeted follow-up questions to narrow the cause, then
@@ -49,8 +52,9 @@ Weather" has run at least once in the conversation.
 
 This is a PlantSession: one instance per diagnostic conversation, holding
 just enough state to ask up to two follow-up questions before summarizing.
-main.py is responsible for creating one when a "Hey Doc" wakeword fires
-and feeding it each ASR transcript in turn until it reports done.
+main.py is responsible for creating one when "Hey Green" resolves to the
+"plant" domain and feeding it each ASR transcript in turn until it
+reports done.
 """
 
 from __future__ import annotations
@@ -348,7 +352,7 @@ def get_control_for_region(disease: NamedDisease, country_code: str) -> list[Reg
 
 @dataclass
 class PlantSession:
-    """Holds state across one multi-turn "Hey Doc" conversation."""
+    """Holds state across one multi-turn plant-diagnosis conversation."""
 
     crop: str | None = None
     initial_symptom_text: str = ""
@@ -712,8 +716,8 @@ class PlantAgent:
         """Drop an in-progress diagnostic session without finishing it --
         called when the farmer's own words clearly redirect to a different
         domain mid-conversation (e.g. "how is the weather" partway through
-        a symptom Q&A). Without this, the next "Hey Doc" call would see
-        session.done still False and silently resume the abandoned
+        a symptom Q&A). Without this, the next plant-diagnosis call would
+        see session.done still False and silently resume the abandoned
         conversation instead of starting a fresh one."""
         self._active_sessions.pop(session_id, None)
 

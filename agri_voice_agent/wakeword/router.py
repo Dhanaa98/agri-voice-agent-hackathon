@@ -1,33 +1,31 @@
-"""Multi-wakeword routing layer.
+"""Wakeword routing layer.
 
-Two ONNX wakeword models: "Hey Green" (covers both Weather and Crop --
-main.py resolves which one via intent.py's resolve_field_domain() once the
-transcript comes back, same deterministic keyword approach the farmer
-dashboard's chat uses -- the function name kept its original "field"
-naming even though the spoken phrase moved on twice now, "Hey Field" then
-"Hey Green", same internal-stays-stable/only-the-phrase-changes pattern as
-"plant"/"Hey Doc" below) and "Hey Doc" (kept separate -- disease diagnosis
-is a different conversation shape, multi-turn and symptom-driven rather
-than a one-shot question; internally still the "plant" domain/filename --
-"Hey Doc" is just the spoken phrase, chosen 2026-09-21 as a friendlier
-"plant doctor" framing than the original "Hey Plant"). Originally three
-wakewords, one per domain (Weather/Crop/Plant); Weather and Crop were
-merged because in practice they're both short, single-shot informational
-questions a farmer asks without first deciding which specialist they want
-("how's it looking out there" could be either), and "Hey Crop"
-specifically was acoustically weak on its own -- short, hard-stop ending,
-too close to "Hey Plant" (the original phrase for this domain). The
-merged phrase itself started as "Hey Field", then changed to "Hey Green"
-(2026-09-23) -- purely a wakeword-model/display-string swap, the
-underlying "field" domain key/filename convention never moved.
+One ONNX wakeword model: "Hey Green" -- covers Weather, Crop, AND Plant.
+Originally two separate wakewords ("Hey Green" for Weather+Crop, "Hey Doc"
+for Plant, kept apart because disease diagnosis is a different
+conversation shape, multi-turn and symptom-driven rather than a one-shot
+question); consolidated to just "Hey Green" (2026-09-28, explicit user
+choice: "i am gonna use only one"). intent.py's resolve_field_domain()
+now resolves a "Hey Green" transcript to weather, crop, OR plant (same
+deterministic keyword approach the farmer dashboard's chat already uses
+for everything), instead of only ever choosing between weather and crop.
+The internal "field" domain-key name is kept (not renamed to something
+like "wake") purely so this isn't a second simultaneous rename on top of
+the wakeword-count change -- it's not an agent and never has been, same
+as when the spoken phrase itself moved twice before ("Hey Field" then
+"Hey Green") while this internal name stayed stable throughout.
 
-First detector to cross its confidence threshold wins for a given frame.
+The router itself was always a genuinely multi-model design (a dict of
+domain -> WakewordModel, keyed by whatever's in DOMAINS/model_paths) --
+going from two wakewords to one only required shrinking DOMAINS below,
+not restructuring this file. If a second wakeword phrase is ever wanted
+again, this class already supports it.
 
-Drop your trained .onnx models into agri_voice_agent/wakeword/models/ named
-field.onnx, plant.onnx (or pass explicit paths to WakewordRouter) and this
-becomes live. Until then, `detect()` accepts a manually-supplied domain
-name so the rest of the pipeline (ASR + domain agents) can be built and
-tested independently of the wakeword models.
+Drop your trained .onnx model into agri_voice_agent/wakeword/models/ named
+field.onnx (or pass an explicit path to WakewordRouter) and this becomes
+live. Until then, `detect()` accepts a manually-supplied domain name so
+the rest of the pipeline (ASR + domain agents) can be built and tested
+independently of the wakeword model.
 """
 
 from __future__ import annotations
@@ -40,11 +38,10 @@ import onnxruntime as ort
 
 from .. import config
 
-DOMAINS = ("field", "plant")
+DOMAINS = ("field",)
 
 DEFAULT_THRESHOLDS = {
     "field": 0.5,
-    "plant": 0.5,
 }
 
 
@@ -70,7 +67,7 @@ class WakewordModel:
 
 
 class WakewordRouter:
-    """Loads both wakeword models ("field", "plant") and routes incoming audio.
+    """Loads the wakeword model(s) named in DOMAINS and routes incoming audio.
 
     Instantiation is lazy per-model: if a model file is missing, that
     domain is simply unavailable for detection (logged, not fatal), so the

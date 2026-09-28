@@ -101,12 +101,17 @@ location question — distinct from `farmer_id`, which scopes which farms
   `SpeechRecognition` API. No server round-trip, no API key, text appears
   live in the input box as you speak, Enter/Send works exactly like typing.
   Not supported in Firefox (button stays hidden there).
-- **Always-listening wakeword mode** ("Hey Green" / "Hey Doc", opt-in
-  toggle) — wakeword *detection* runs entirely client-side
-  (`onnxruntime-web`, no audio leaves the device until a wakeword fires).
-  Once triggered, the actual question is streamed server-side to
-  **AssemblyAI** (`asr.py`, `universal_streaming_english` model) over a
-  WebSocket. This is the one voice path that needs `ASSEMBLYAI_API_KEY`
+- **Always-listening wakeword mode** ("Hey Green", opt-in toggle) —
+  wakeword *detection* runs entirely client-side (`onnxruntime-web`, no
+  audio leaves the device until the wakeword fires). Once triggered, the
+  actual question is streamed server-side to **AssemblyAI** (`asr.py`,
+  `universal_streaming_english` model) over a WebSocket, then routed to
+  weather/crop/plant via the same keyword+interpreter logic described
+  above — the wakeword only decides *when* to start listening, never
+  which domain answers. One wakeword covers all three domains as of
+  2026-09-28 (previously two: "Hey Green" for weather/crop, "Hey Doc"
+  kept separate for plant diagnosis — consolidated to one, explicit user
+  choice). This is the one voice path that needs `ASSEMBLYAI_API_KEY`
   configured and has not been exercised against a real microphone in this
   dev environment — verify live before relying on it for a demo.
 

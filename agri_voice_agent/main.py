@@ -1,31 +1,32 @@
 """Main orchestration loop: wakeword -> ASR -> domain routing -> response.
 
-Two wakewords, not three: "Hey Green" covers both Weather and Crop, "Hey
-Doc" stays separate (see wakeword/router.py's module docstring for why).
-"field" is the internal WAKEWORD/domain-key name, not an agent or the
-spoken phrase -- there is no FieldAgent, and the phrase itself has changed
-twice ("Hey Field" then "Hey Green") while this internal name stayed
-stable. Once "Hey Green" fires and ASR returns a transcript,
-`_resolve_wakeword_domain()` uses intent.py's deterministic keyword
-routing (the same mechanism the farmer dashboard's single chat uses) to
-decide weather vs crop BEFORE any agent.handle() call -- so
-`self.active_domain` briefly holds "field" only while listening, and is
-rewritten to "weather" or "crop" the moment speech comes back.
+One wakeword, "Hey Green", covers all three domains (Weather, Crop, and
+Plant) -- see wakeword/router.py's module docstring for the two-then-one
+history. "field" is the internal WAKEWORD/domain-key name, not an agent or
+the spoken phrase -- there is no FieldAgent, and the phrase itself has
+changed twice ("Hey Field" then "Hey Green") while this internal name
+stayed stable. Once "Hey Green" fires and ASR returns a transcript,
+`resolve_field_domain()` (intent.py) uses the same deterministic keyword
+routing the farmer dashboard's single chat uses to decide weather/crop/
+plant BEFORE any agent.handle() call -- so `self.active_domain` briefly
+holds "field" only while listening, and is rewritten to the real domain
+the moment speech comes back.
 
 State machine per audio frame:
   IDLE    -- every frame is scored by the wakeword router. A detection
              crossing threshold switches to ACTIVE for that wakeword and
              opens an ASR session.
   ACTIVE  -- frames are streamed to ASR instead of the wakeword router,
-             until ASR reports a final transcript for one utterance. If the
-             active wakeword was "field", the transcript first resolves to
-             weather or crop; the matching domain agent then handles it
-             against the shared farm_state, the response is printed
-             (stand-in for TTS), and the loop returns to IDLE.
+             until ASR reports a final transcript for one utterance. The
+             transcript first resolves "field" to weather/crop/plant; the
+             matching domain agent then handles it against the shared
+             farm_state, the response is printed (stand-in for TTS), and
+             the loop returns to IDLE (or stays active for Plant's
+             multi-turn follow-ups -- see MULTI_TURN_DOMAINS below).
 
-Requires wakeword .onnx models to be present under
+Requires a wakeword .onnx model to be present under
 agri_voice_agent/wakeword/models/ to actually trigger domains by voice.
-Until those exist, run individual domain agents directly (see
+Until it exists, run individual domain agents directly (see
 tests/test_weather_manual.py, tests/test_crop_manual.py) or use
 `--domain` to skip wakeword detection and go straight into ACTIVE mode for
 one domain, for testing the ASR/domain wiring independently.
@@ -106,9 +107,9 @@ class VoiceAgentLoop:
     def _on_final_transcript(self, transcript: str) -> None:
         domain = self.active_domain
         # "field" is the wakeword that was heard, not an agent -- resolve
-        # it to weather/crop now that we actually have words to route on,
-        # same deterministic keyword logic the farmer dashboard's chat
-        # uses. self.active_domain is updated too so the rest of this turn
+        # it to weather/crop/plant now that we actually have words to
+        # route on, same deterministic keyword logic the farmer
+        # dashboard's chat uses. self.active_domain is updated too so the rest of this turn
         # (events, _end_turn's idle-domain reset) reflects the REAL domain,
         # not the wakeword name.
         if domain == "field":

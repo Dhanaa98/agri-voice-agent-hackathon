@@ -22,9 +22,9 @@ There are three ways to send a message:
 - **Tap the mic button** — your words appear in the text box as you speak.
   Nothing is sent automatically; check the text is right, then press
   Enter or tap Send yourself. Tap the mic again to stop listening early.
-- **Say a wakeword** ("Hey Green" for weather/crop questions, "Hey Doc" for
-  a sick plant) — only if you've turned on always-listening mode. This
-  keeps the microphone on in the background and needs no button press.
+- **Say "Hey Green"** — for any question, weather/crop/plant included —
+  only if you've turned on always-listening mode. This keeps the
+  microphone on in the background and needs no button press.
 
 ## What it can help with
 
@@ -66,7 +66,7 @@ replies aren't instant. Rough numbers:
 | Typing a question that matches an obvious keyword (e.g. "what's the weather") | 2-4 seconds |
 | Asking something less direct or a follow-up ("and what about tomorrow?") | 4-6 seconds — this needs one extra step to understand what you mean |
 | Tapping the mic and speaking | The text box fills in almost instantly as you talk; the actual reply then takes the same 2-6 seconds as typing, once you send it |
-| Saying a wakeword ("Hey Green"/"Hey Doc") for the first question in a while | Up to ~5 extra seconds the first time, while the voice connection sets up — after that, each question in the same conversation is normal speed |
+| Saying "Hey Green" for the first question in a while | Up to ~5 extra seconds the first time, while the voice connection sets up — after that, each question in the same conversation is normal speed |
 | A plant diagnosis (multiple follow-up questions) | Each step is a normal 2-4 second reply; the whole conversation naturally takes a few exchanges |
 
 If a reply seems to be taking unusually long (more than ~20 seconds), the

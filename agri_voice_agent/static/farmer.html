@@ -558,6 +558,22 @@
   .panel[data-view="plant"] .panel-head-icon { background: var(--plant-soft); color: var(--plant); }
   .panel-head h3 { margin: 0; font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
   .panel-sub { font-size: 12.5px; color: var(--ink-3); }
+  .panel-head-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+  .clear-chat-btn {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-3);
+    flex-shrink: 0;
+  }
+  .clear-chat-btn .ic { width: 16px; height: 16px; }
+  .clear-chat-btn:hover { border-color: var(--danger); color: var(--danger); }
+  .clear-chat-btn:disabled { opacity: .4; pointer-events: none; }
 
   .wake-toggle {
     display: inline-flex;
@@ -1112,6 +1128,7 @@
     <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></symbol>
     <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/><circle cx="12" cy="12" r="7"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
   </defs>
 </svg>
 
@@ -1233,10 +1250,15 @@
             <div class="panel-sub" id="panel-sub">Weather, crop and plant health in one place</div>
           </div>
         </div>
-        <span class="wake-toggle" id="wake-indicator" hidden>
-          <span class="wake-dot" id="wake-dot"></span>
-          <span id="wake-indicator-label">Listening</span>
-        </span>
+        <div class="panel-head-right">
+          <button type="button" class="clear-chat-btn" id="clear-chat-btn" title="Clear this conversation" aria-label="Clear this conversation">
+            <svg class="ic"><use href="#i-trash"/></svg>
+          </button>
+          <span class="wake-toggle" id="wake-indicator" hidden>
+            <span class="wake-dot" id="wake-dot"></span>
+            <span id="wake-indicator-label">Listening</span>
+          </span>
+        </div>
       </div>
       <div class="voice-status-row" id="voice-status-row" hidden>
         <span id="voice-status-icon"><svg class="ic"><use href="#i-mic"/></svg></span>
@@ -1410,6 +1432,7 @@ const els = {
   sidebar: document.getElementById("sidebar"),
   drawerBackdrop: document.getElementById("drawer-backdrop"),
   drawerToggle: document.getElementById("farms-drawer-toggle"),
+  clearChatBtn: document.getElementById("clear-chat-btn"),
   wakeIndicator: document.getElementById("wake-indicator"),
   wakeIndicatorLabel: document.getElementById("wake-indicator-label"),
   voiceStatusRow: document.getElementById("voice-status-row"),
@@ -1823,6 +1846,26 @@ async function deleteFarmWithConfirm(index, name) {
   editingFarmIndex = null;
   await loadFarmState();
 }
+
+// "Clear chat" -- resets the visible log AND the server-side memory it's
+// backed by (see DELETE /conversation), not just what's on screen: without
+// clearing the server side too, a refresh would bring the "cleared"
+// conversation right back (see the transcript-persistence feature above),
+// and crop.py/plant.py would keep splicing the "cleared" turns into their
+// prompts via recent_chat_context(). Same confirm-first pattern as
+// deleteFarmWithConfirm() -- this can't be undone either.
+async function clearChat() {
+  if (!state.messages.length) return;
+  if (!window.confirm("Clear this conversation? This can't be undone.")) return;
+  els.clearChatBtn.disabled = true;
+  try {
+    await fetch(`/conversation?farmer_id=${encodeURIComponent(FARMER_ID)}`, { method: "DELETE" });
+  } catch (e) { /* best-effort -- the visible log still clears below even if this fails */ }
+  state.messages = [];
+  renderMessages();
+  els.clearChatBtn.disabled = false;
+}
+els.clearChatBtn.addEventListener("click", clearChat);
 
 function escapeHtml(s) {
   const div = document.createElement("div");

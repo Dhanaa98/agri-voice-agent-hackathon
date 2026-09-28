@@ -611,6 +611,24 @@ async def delete_farm(index: int, farmer_id: str | None = None) -> dict:
     return {"ok": True}
 
 
+@app.delete("/conversation")
+async def clear_conversation(farmer_id: str | None = None) -> dict:
+    """"Clear chat" button (farmer.html) -- resets the visible transcript
+    (see TranscriptEntry) and every farm's own chat_history (the recent-
+    turns context crop.py/plant.py splice into their prompts), so a
+    cleared conversation actually starts fresh rather than the agents
+    still quietly recalling turns the farmer just asked to forget. Does
+    NOT touch farms, their weather/crops_grown/recent_symptoms_reported,
+    or regional_disease_notes -- this clears the CONVERSATION, not the
+    farm data those turns happened to produce."""
+    _use_farm_state(farmer_id)
+    _farm_state.transcript = []
+    for f in _farm_state.farms:
+        f.chat_history = []
+    _farm_store.save(config.FARM_STATE_PATH)
+    return {"ok": True}
+
+
 class ResolveLocationIn(BaseModel):
     # GPS fix from the browser's navigator.geolocation, when the farmer
     # granted permission. Omitted (both None) triggers the IP-based

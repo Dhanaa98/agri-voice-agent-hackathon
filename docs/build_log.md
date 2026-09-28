@@ -334,6 +334,38 @@ Running log of build progress for this project at
   confirmed all 4 bubbles reappeared with identical text; also verified
   via direct API calls that two different farmer_ids' transcripts stay
   fully isolated from each other.
+- **"Clear chat" button added (2026-09-28).** Direct follow-up to the
+  transcript-persistence feature above -- once refresh started bringing
+  old conversations back, a way to actually start fresh became necessary
+  (there wasn't one before; the chat had no reset control at all). Added
+  a trash-icon button in the panel header (`#clear-chat-btn`, new `i-trash`
+  SVG symbol) next to the wake-listening indicator, confirm-gated the same
+  way `deleteFarmWithConfirm()` already is elsewhere in this file. New
+  `DELETE /conversation?farmer_id=...` endpoint (farmer_server.py) clears
+  `FarmState.transcript` (the visible log) AND every farm's own
+  `chat_history` (crop.py/plant.py's `recent_chat_context()` source) --
+  deliberately clearing both, not just the transcript: clearing only the
+  display would still have the agents quietly recalling turns the farmer
+  just asked to forget. Explicitly does NOT touch farms themselves, their
+  weather/`crops_grown`/`recent_symptoms_reported`, or
+  `regional_disease_notes` -- this clears the CONVERSATION, not the real
+  farm data those turns happened to produce.
+  **Real race found while verifying, not fixed (documented instead):**
+  clicking Clear while a message is still awaiting its reply lets that
+  reply land after the clear and silently repopulate the log (reproduced
+  with a 5s wait that wasn't quite long enough for a weather reply still
+  in flight). Narrow window, existing `send-btn` disable-while-waiting
+  already makes it hard to hit in the UI (you'd need to trigger clear via
+  something other than the disabled Send button while a request is still
+  out), so left as a known edge case rather than adding request
+  cancellation for it.
+  Verified end-to-end with a properly-awaited request: 4 bubbles on
+  screen -> click Clear, confirm -> 0 bubbles, empty state shown -> reload
+  -> still 0 bubbles (transcript actually gone server-side, not just
+  hidden client-side); confirmed via direct API that the farm itself and
+  its name/location survive a clear while `chat_history` and `transcript`
+  both come back empty; checked the button doesn't cause horizontal
+  overflow at 375px mobile width.
 - **AssemblyAI streaming model switched from multilingual to English-only
   (2026-09-27).** User asked specifically to improve transcription quality
   for the wakeword-triggered question path (asr.py -- the one AssemblyAI

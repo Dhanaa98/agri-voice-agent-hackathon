@@ -720,7 +720,21 @@
   .voice-status-row.detected #voice-status-icon { display: none; }
   .voice-status-row.detected #voice-status-text { flex: 1; min-width: 0; }
   .wake-scan { display: block; width: 100%; }
-  .wake-scan-track { position: relative; width: 100%; height: 10px; border-radius: 999px; background: var(--line-2); overflow: hidden; }
+  .wake-scan-track {
+    /* REAL BUG FOUND AND FIXED (2026-09-29, reported live: "just a green
+       line, no animation"). Both spans default to `display: inline`,
+       which ignores `width`/`height` entirely -- the track was rendering
+       at 0x0 (confirmed via Playwright: getBoundingClientRect() was
+       {w:0, h:0}), so there was nothing to animate. `display: block`
+       is what actually lets the width/height rules below take effect. */
+    display: block;
+    position: relative;
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: var(--line-2);
+    overflow: hidden;
+  }
   .wake-scan-track::before,
   .wake-scan-track::after {
     content: "";
@@ -3253,8 +3267,18 @@ els.enableVoiceBtn.addEventListener("click", () => {
   // greeting are exactly the case mobile browsers restrict) -- priming
   // one silent play() here, inside this real click, before any cloud-TTS
   // reply is ever attempted.
+  // REAL BUG FOUND AND FIXED (2026-09-30, reported live: cloud voice
+  // worked on desktop but not on mobile). `new Audio()` with no `src` has
+  // nothing to actually play -- on strict mobile Safari/Chrome, .play()
+  // on a sourceless element rejects immediately without ever registering
+  // a real playback attempt, so it doesn't reliably unlock anything.
+  // Using a real (if silent) WAV data URI so an actual decode+playback
+  // attempt happens inside this gesture, same as the browsers' own
+  // documented unlock pattern.
   try {
-    const audioUnlock = new Audio();
+    const audioUnlock = new Audio(
+      "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+    );
     audioUnlock.play().catch(() => {});
   } catch (e) { /* best-effort -- if this fails, later cloud playback would too */ }
   startWakewordListening().catch((err) => {

@@ -4,6 +4,63 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Three REAL BUGS FOUND AND FIXED (2026-09-30, all reported live from
+  the same session): wake animation invisible, LLM hallucinating a farm
+  relocation that never happened, mobile cloud-voice silent.**
+  1. **Wake animation was 0x0.** The previous entry's "thicker, fills from
+     both sides" redesign used `<span>` elements for `.wake-scan-track`
+     and its `::before`/`::after` fill bars -- spans default to `display:
+     inline`, which ignores `width`/`height` entirely. Confirmed via
+     Playwright: `getBoundingClientRect()` on the track was `{w:0, h:0}`
+     the whole time the "animation" was supposedly running -- there was
+     nothing there to see except the row's own background color, which
+     read as "just a green line, no animation." Added `display: block`
+     to `.wake-scan-track`; confirmed real `{w:586, h:10}` afterward.
+  2. **Relocating a farm via the natural two-step "update my farm's
+     location" -> "which town?" -> "<answer>" flow silently did nothing,
+     despite the assistant confidently saying it had.** Root cause: both
+     `_RELOCATE_FARM_RE_A`/`_RELOCATE_FARM_RE_B` (previous entry) require
+     "to LOCATION" in the SAME message as the command -- a bare "update my
+     farm's location" (no destination yet) matches neither, so it fell
+     straight through every piece of deterministic farm-management logic
+     to ordinary LLM-phrased domain routing. That LLM has no tool to
+     actually touch `farm.location` -- it just phrased a plausible-sounding
+     "which town or area?" question and, on the next turn, an equally
+     plausible-sounding "I've updated it to X" -- while the real
+     `farm.location` never changed (confirmed via live `/chat` calls: the
+     reply said "Test Farm is now set to Colombo" while
+     `farm_state.farms[0].location` was still "Kalam"). This is a direct
+     violation of this project's core "deterministic logic decides, LLM
+     only phrases" rule, and worse, it's actively misleading -- the
+     farmer is told something happened that didn't. Fixed by adding a
+     third path: `_RELOCATE_NO_DEST_RE`/`_match_relocate_no_dest()`
+     recognizes the no-destination phrasing, resolves the farm (handling
+     generic references like "my farm"/"the farm" by falling back to the
+     active farm via `_GENERIC_FARM_REF`), and sets a new
+     `SessionState.pending_relocate_farm` (farm index) -- handled in
+     `_answer()` the same way `pending_new_farm_location` already is:
+     the next reply is geocode-validated and applied directly to
+     `farm.location`, with a genuinely deterministic confirmation
+     message, not an LLM guess.
+  3. **ElevenLabs cloud voice worked on desktop but was silent on
+     mobile.** The existing mobile-autoplay-unlock code (from the
+     2026-09-27 entry) called `new Audio().play()` with NO `src` --
+     on strict mobile Safari/Chrome, `.play()` on a sourceless element
+     rejects immediately without registering a real playback attempt, so
+     it doesn't reliably "prime" the page for later programmatic
+     `.play()` calls (the wakeword greeting, fired from an async
+     callback, not a click). Swapped to a real (silent) WAV data URI so
+     an actual decode+playback attempt happens inside the "Enable voice"
+     button's click handler, matching the pattern mobile browsers
+     actually key their autoplay allowance off of.
+  **Verified:** `python -m py_compile`/`node --check` both passed;
+  Playwright confirmed the wake track's real bounding box and zero
+  console errors; live `/chat` round-trips confirmed both relocate
+  phrasings ("update my farm's location" -> "Colombo" two-step, and
+  "update the location of X to Y" one-shot) now genuinely change
+  `farm_state.farms[i].location`, not just the reply text. The mobile
+  audio-unlock fix could not be verified end-to-end here (no real mobile
+  Safari in this environment) -- worth a manual check on an actual phone.
 - **REAL BUG FOUND AND FIXED: "update the location of X to Y" silently
   never matched (2026-09-29).** User reported: asked to update a farm's
   location, the assistant said it would, but the location never actually

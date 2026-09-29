@@ -155,6 +155,26 @@ class SessionState:
     # forwarded to a weather agent that would answer with a forecast
     # instead of saving anything.
     pending_new_farm_location: int | None = None
+    # Index of a farm waiting to be told its NEW location -- set when the
+    # farmer asks to change a farm's location without giving the
+    # destination in the same message ("update my farm's location", no
+    # "to X"). REAL BUG FOUND AND FIXED (2026-09-30, reported live: the
+    # assistant asked "which town?", the farmer answered, it replied "I've
+    # updated your farm's location to X" -- but the sidebar still showed
+    # the OLD location). Root cause: _match_relocate_farm()/_RELOCATE_FARM_RE_*
+    # both require "to LOCATION" in the SAME message, so a bare "update my
+    # farm's location" matched neither and fell through past all
+    # deterministic farm-management handling straight to ordinary domain
+    # routing -- which handed it to an LLM-phrased agent reply. That agent
+    # has no tool to actually change farm.location, so "which town or
+    # area...", and later "I've updated it to X", were both pure LLM
+    # phrasing with NO real state change behind them -- a direct violation
+    # of this project's "deterministic logic decides, LLM only phrases"
+    # rule, and confusing/untrustworthy besides. This field, handled the
+    # same way pending_new_farm_location is (checked in _answer() before
+    # generic routing, the reply applied directly to farm.location), makes
+    # the same two-step "which town?" / "<reply>" exchange actually work.
+    pending_relocate_farm: int | None = None
     # (farm index, farm name) awaiting a yes/no reply to "delete FARM? this
     # can't be undone" -- see _handle_farm_management(). Name is stored
     # alongside the index so a stale confirmation (the farm list changed
@@ -922,6 +942,23 @@ _RELOCATE_FARM_RE_B = re.compile(
     r"^(?:change|set|update)\s+(?P<name>.+?)(?:'s)?\s+location\s+to\s+(?P<location>.+)$",
     re.IGNORECASE,
 )
+# Same two phrasings as above, but with NO destination given yet ("update
+# my farm's location", "change the location of Farm 1") -- see
+# pending_relocate_farm's docstring on SessionState for the bug this
+# fixes: without this, the message matched neither RE_A/RE_B (both
+# require "to LOCATION") and fell through to an LLM-phrased domain reply
+# that could ask a plausible-sounding question but had no way to actually
+# apply the answer.
+_RELOCATE_NO_DEST_RE = re.compile(
+    r"^(?:change|set|update)\s+(?:the\s+)?"
+    r"(?:location\s+(?:of|for)\s+(?P<name1>.+?)|(?P<name2>.+?)(?:'s)?\s*location)\s*[.!?]*$",
+    re.IGNORECASE,
+)
+# Filler ways of referring to "the farm we're already talking about"
+# rather than naming one -- normalized to "" so _resolve_farm_reference()
+# falls back to the session's active farm instead of failing to find a
+# farm literally named "my farm".
+_GENERIC_FARM_REF = {"my farm", "the farm", "this farm", "that farm", "it"}
 # A genuine question, not a command -- "what farms do I have", "what farms
 # are there", "list my farms", "how many farms do I have". Added because a
 # farmer naturally asking this (or an ASR mangling of it, e.g. "what are my
@@ -985,6 +1022,21 @@ def _match_relocate_farm(text: str) -> tuple[str, str] | None:
     if not location:
         return None
     return name, location
+
+
+def _match_relocate_no_dest(text: str) -> str | None:
+    """("update my farm's location") -> "" (generic filler, resolved to
+    the active farm by _resolve_farm_reference); ("change the location of
+    North Field") -> "North Field". Returns None if the message doesn't
+    match this shape at all (including when it HAS a destination -- callers
+    check _match_relocate_farm first)."""
+    m = _RELOCATE_NO_DEST_RE.match(text.strip())
+    if not m:
+        return None
+    name = _clean_farm_phrase(m.group("name1") or m.group("name2") or "")
+    if name.lower() in _GENERIC_FARM_REF:
+        name = ""
+    return name
 
 
 _LEADING_TRAILING_FARM_RE = re.compile(r"^farm\s+|\s+farm$", re.IGNORECASE)
@@ -1173,6 +1225,32 @@ def _handle_farm_management(text: str, session: SessionState, mid_plant: bool = 
         _farm_store.save(config.FARM_STATE_PATH)
         return _reply("general", f"{farm.name} is now set to {location}.", farm, text, session.session_id)
 
+    # No destination given yet ("update my farm's location") -- ask for
+    # one and remember which farm via pending_relocate_farm, same pattern
+    # as pending_new_farm_location. See that field's docstring for the
+    # LLM-hallucinated-success bug this fixes.
+    relocate_name = _match_relocate_no_dest(stripped)
+    if relocate_name is not None:
+        idx = _resolve_farm_reference(session, relocate_name)
+        if idx is None or not (0 <= idx < len(_farm_state.farms)):
+            names = ", ".join(f.name for f in _farm_state.farms) or "none yet"
+            return _reply(
+                "general",
+                f"I couldn't find a farm called {relocate_name or 'that'}. Your farms are: {names}.",
+                None,
+                text,
+                session.session_id,
+            )
+        farm = _farm_state.farms[idx]
+        session.pending_relocate_farm = idx
+        return _reply(
+            "general",
+            f"Sure -- what town or area should I set {farm.name}'s location to?",
+            farm,
+            text,
+            session.session_id,
+        )
+
     # REAL BUG FOUND AND FIXED (2026-09-27, reported live: said "delete"
     # then, separately, just "farm 1" -- got "sorry, I didn't catch that"
     # instead of "what should I do with Farm 1?"). Every command above
@@ -1257,6 +1335,7 @@ def _answer(
         session.pending_new_farm_location = None
         session.pending_new_farm_name = None
         session.pending_rename = None
+        session.pending_relocate_farm = None
         farm = _farm_state.farms[session.active_farm_index] if session.active_farm_index is not None else None
         return _reply("general", GOODBYE_TEXT, farm, text, session.session_id, end_conversation=True)
 
@@ -1331,6 +1410,51 @@ def _answer(
             return _reply(
                 "general",
                 "Sorry, I didn't catch a place name there. What town or area is your farm in?",
+                farm,
+                text,
+                session.session_id,
+            )
+
+    # The farmer is answering "what town or area should I set FARM's
+    # location to?" from the no-destination relocate flow above -- same
+    # geocode-validate-then-apply shape as pending_new_farm_location just
+    # above (deliberately duplicated rather than shared: the two success/
+    # failure messages differ and the fields being cleared differ, and this
+    # block is short enough that a shared helper would just move the
+    # reading, not simplify it). See pending_relocate_farm's docstring on
+    # SessionState for the bug this fixes.
+    if not mid_plant_conversation and session.pending_relocate_farm is not None:
+        idx = session.pending_relocate_farm
+        if not (0 <= idx < len(_farm_state.farms)):
+            session.pending_relocate_farm = None
+        else:
+            place = _location_from_reply(text)
+            farm = _farm_state.farms[idx]
+            weather_agent = _agents.get("weather")
+            geocode_failed = False
+            if place and weather_agent is not None:
+                try:
+                    _, _, country_code = weather_agent.geocode(place)
+                except ValueError:
+                    geocode_failed = True
+                except Exception:  # noqa: BLE001 -- network/API hiccup: don't block the update over it
+                    country_code = ""
+                else:
+                    session.pending_relocate_farm = None
+                    farm.location = place
+                    farm.location_confirmed = True
+                    farm.country_code = country_code
+                    _farm_store.save(config.FARM_STATE_PATH)
+                    return _reply("general", f"{farm.name} is now set to {place}.", farm, text, session.session_id)
+            if place and not geocode_failed and weather_agent is None:
+                session.pending_relocate_farm = None
+                farm.location = place
+                farm.location_confirmed = True
+                _farm_store.save(config.FARM_STATE_PATH)
+                return _reply("general", f"{farm.name} is now set to {place}.", farm, text, session.session_id)
+            return _reply(
+                "general",
+                "Sorry, I didn't catch a place name there. What town or area should I set it to?",
                 farm,
                 text,
                 session.session_id,

@@ -4,6 +4,20 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Product name finalized as "Hey Green" (2026-09-30).** After
+  weighing "Grasshopper" (rejected -- pest/crop-damage connotation for a
+  farming app), "GreenThumb" (rejected -- an existing gardening brand,
+  and loses the wakeword-doubles-as-name trick), and "GreenBot AI"
+  (rejected -- reads as a generic category label, "Bot"+"AI" stacked),
+  the user picked "Hey Green" -- already the app's actual wakeword phrase
+  (see the 2026-09-25-ish wakeword-consolidation entry below), so the
+  product name and the thing you say to it match. Updated every UI
+  string in `farmer.html` that still said "Farm Assistant": `<title>`,
+  the mobile top bar brand, the sidebar brand button (text + its `title`
+  tooltip), and `DOMAIN_META.general.agent` (the label shown next to the
+  assistant's own chat bubbles in the "All conversations" view). The
+  `submission/` materials (SUBMISSION.md, cover image) and the pitch
+  deck already used "Hey Green" throughout, so no change needed there.
 - **Two REAL BUGS FOUND AND FIXED (2026-09-30): relocate-by-generic-
   reference regression, and the deployed page caching stale JS.**
   1. **"Change the farm location to Colombo" got "I couldn't find a farm

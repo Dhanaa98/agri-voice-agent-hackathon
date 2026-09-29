@@ -4,6 +4,41 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Two REAL BUGS FOUND AND FIXED (2026-09-30): relocate-by-generic-
+  reference regression, and the deployed page caching stale JS.**
+  1. **"Change the farm location to Colombo" got "I couldn't find a farm
+     called the farm" instead of changing anything.** Regression from
+     this same day's earlier relocate fixes: `_match_relocate_no_dest()`
+     already normalizes a generic reference ("the farm"/"my farm"/etc,
+     via `_GENERIC_FARM_REF`) to `""` so `_resolve_farm_reference()`
+     falls back to the session's active farm -- but the WITH-destination
+     matcher, `_match_relocate_farm()`, never got the same treatment, so
+     `_RELOCATE_FARM_RE_B`'s `(?P<name>.+?)` happily captured "the farm"
+     literally and tried to find a farm actually named that. Applied the
+     same `_GENERIC_FARM_REF` normalization there too. **Verified** live:
+     "change the farm location to Colombo" and "change my farm's
+     location to Jaffna" both now genuinely update
+     `farm_state.farms[i].location` (confirmed via `/chat`, not just the
+     reply text -- the same kind of check that caught the original
+     hallucinated-relocation bug earlier today).
+  2. **"Mic button doesn't work at all" -- on a device it worked on
+     before, right after a real fix had just shipped.** `GET /` served
+     `farmer.html` via plain `FileResponse`, which sends `Last-Modified`
+     with no `Cache-Control` -- leaves a browser (mobile especially) free
+     to keep serving a stale cached copy indefinitely instead of
+     revalidating. Every symptom reported ("worked before, both iPhone
+     and desktop now do nothing") is consistent with a stale cache
+     serving an in-between commit from earlier in this session, rather
+     than a real regression in the code actually on disk -- confirmed by
+     testing the current code fresh in an unrelated browser context: the
+     hold-to-talk pointerdown/pointerup cycle worked with zero console
+     errors, on both a plain desktop UA and a simulated iPhone-Chrome UA,
+     with the server's `mic_available` capability forced `false` too (to
+     rule out a Render-env-var-difference theory). Added `Cache-Control:
+     no-cache, must-revalidate` to `GET /`'s response so this single
+     actively-changing HTML file is always revalidated rather than
+     trusted from cache -- cheap to re-fetch, and worth it while this app
+     is still under active development.
 - **REAL FEATURE ADDED: push-to-talk dictation on iOS, via the AssemblyAI
   pipeline instead of the browser's own SpeechRecognition (2026-09-30).**
   Follow-up to the entry directly below: hiding the mic button on iOS

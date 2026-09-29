@@ -501,7 +501,17 @@ class ChatOut(BaseModel):
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "farmer.html")
+    # REAL BUG FOUND AND FIXED (2026-09-30, reported live: "mic button
+    # doesn't work at all" on a device it worked on before, right after a
+    # fresh deploy). FileResponse defaults to sending Last-Modified with
+    # no Cache-Control, which leaves a browser (mobile ones especially)
+    # free to keep serving a stale cached copy of this single-file app
+    # indefinitely rather than revalidate -- exactly what "it worked
+    # yesterday, now nothing happens" looks like after a real fix ships.
+    # This file is actively changing during development and is cheap to
+    # re-fetch (one HTML file), so always revalidate rather than trust
+    # any cache.
+    return FileResponse(STATIC_DIR / "farmer.html", headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/wakeword-test")
@@ -1018,6 +1028,18 @@ def _match_relocate_farm(text: str) -> tuple[str, str] | None:
     if not m:
         return None
     name = _clean_farm_phrase(m.group("name") or "")
+    # REAL BUG FOUND AND FIXED (2026-09-30, reported live: "change the
+    # farm location to Colombo" got "I couldn't find a farm called the
+    # farm" instead of actually changing it). RE_B's `(?P<name>.+?)`
+    # happily captures a generic reference like "the farm"/"my farm"
+    # literally, and _resolve_farm_reference() has no farm actually named
+    # that -- _match_relocate_no_dest() already normalizes this exact
+    # case (see _GENERIC_FARM_REF) for the no-destination phrasing, but
+    # this with-destination match never got the same treatment. Applying
+    # it here too so both phrasings fall back to the session's active
+    # farm the same way.
+    if name.lower() in _GENERIC_FARM_REF:
+        name = ""
     location = _clean_farm_phrase(m.group("location"))
     if not location:
         return None

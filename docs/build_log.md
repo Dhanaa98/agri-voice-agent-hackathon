@@ -4,6 +4,24 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL BUG FOUND AND FIXED: "update the location of X to Y" silently
+  never matched (2026-09-29).** User reported: asked to update a farm's
+  location, the assistant said it would, but the location never actually
+  changed. `_RELOCATE_FARM_RE` required the literal word "location" to
+  appear TWICE in one phrase -- once in its optional "location of/for"
+  lead-in, once in its mandatory "location to" clause -- but had only one
+  `location` token in the actual regex, so "update the location of Farm 1
+  to Jaffna" (the natural phrasing) consumed "location" in the lead-in and
+  left nothing for the mandatory clause to match, so the whole regex
+  silently failed to match at all (fell through to the generic clarify
+  reply -- "said it would but never did" is exactly what a false non-match
+  after a confident-sounding earlier turn looks like). "X's location to
+  Y" phrasing worked fine, which is why it wasn't caught earlier. Split
+  into two separate patterns (`_RELOCATE_FARM_RE_A` for "location of/for
+  NAME to LOCATION", `_RELOCATE_FARM_RE_B` for "NAME['s] location to
+  LOCATION"), tried in order in `_match_relocate_farm()`.
+  **Verified:** both phrasings (and several natural variants) now
+  correctly extract name+location; `python -m py_compile` passed.
 - **REAL BUG FOUND AND FIXED: new-farm location capture rejected accurate
   answers; REAL FEATURE ADDED: thicker double-sided wake animation with no
   label text (2026-09-29).** User reported (live screenshot): answering

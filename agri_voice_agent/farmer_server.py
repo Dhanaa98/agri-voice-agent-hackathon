@@ -902,9 +902,24 @@ _ADD_FARM_LEAD_IN_RE = re.compile(
 # common case.
 _DELETE_FARM_RE = re.compile(r"^(?:delete|remove|drop)\s+(?:the\s+)?(?P<name>.+)$", re.IGNORECASE)
 _RENAME_FARM_RE = re.compile(r"^rename\s+(?:the\s+)?(?P<old>.+?)\s+to\s+(?P<new>.+)$", re.IGNORECASE)
-_RELOCATE_FARM_RE = re.compile(
-    r"^(?:change|set|update)\s+(?:the\s+)?(?:location\s+(?:of|for)\s+)?"
-    r"(?P<name>.+?)?(?:'s)?\s*location\s+to\s+(?P<location>.+)$",
+#   A) "change/set/update [the] location of/for NAME to LOCATION"
+#   B) "change/set/update NAME['s] location to LOCATION"
+# REAL BUG FOUND AND FIXED (2026-09-29, reported live: "update the
+# location of Farm 1 to Jaffna" -- the natural phrasing -- said it would
+# but never actually changed anything). The original single regex had
+# "location" appear only once in its pattern but required it to satisfy
+# BOTH the optional "location of/for" lead-in AND the mandatory "location
+# to" before the destination -- so phrasing A consumed "location" in the
+# lead-in and left nothing to match the mandatory "location to" later,
+# silently failing to match at all (which farmer_server.py's caller then
+# reported as a generic "sorry, I didn't catch that", not an error -- easy
+# to miss). Split into two patterns, one per phrasing, tried in order.
+_RELOCATE_FARM_RE_A = re.compile(
+    r"^(?:change|set|update)\s+(?:the\s+)?location\s+(?:of|for)\s+(?P<name>.+?)\s+to\s+(?P<location>.+)$",
+    re.IGNORECASE,
+)
+_RELOCATE_FARM_RE_B = re.compile(
+    r"^(?:change|set|update)\s+(?P<name>.+?)(?:'s)?\s+location\s+to\s+(?P<location>.+)$",
     re.IGNORECASE,
 )
 # A genuine question, not a command -- "what farms do I have", "what farms
@@ -961,7 +976,8 @@ def _match_rename_farm(text: str) -> tuple[str, str] | None:
 
 
 def _match_relocate_farm(text: str) -> tuple[str, str] | None:
-    m = _RELOCATE_FARM_RE.match(text.strip())
+    stripped = text.strip()
+    m = _RELOCATE_FARM_RE_A.match(stripped) or _RELOCATE_FARM_RE_B.match(stripped)
     if not m:
         return None
     name = _clean_farm_phrase(m.group("name") or "")

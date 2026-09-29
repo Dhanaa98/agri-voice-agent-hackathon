@@ -656,6 +656,38 @@
   }
   @keyframes speak-ring { 0% { transform: scale(0.55); opacity: 0.65; } 100% { transform: scale(1.5); opacity: 0; } }
 
+  /* Wakeword just detected -- REAL FEATURE ADDED (2026-09-29, user asked
+     for a Siri/Alexa-style animation here instead of a "Hey Green -- one
+     moment..." text status). A thin horizontal track spans the row with a
+     glowing segment sweeping through it on a loop, next to just the
+     wakeword name -- no "one moment" copy needed, the motion itself
+     says "working on it". Reuses the accent/green tokens (not the
+     amber "speaking" ones) since this is specifically the
+     wakeword-acknowledged moment, distinct from actually reading a
+     reply aloud. Lives inside the existing #voice-status-text slot
+     (innerHTML, not textContent) rather than replacing the row's own
+     children, so the cached `els.voiceStatusIcon`/`els.voiceStatusText`
+     references other setVoiceStatus() calls depend on stay valid
+     afterwards -- see showWakeDetected(). */
+  .voice-status-row.detected { background: var(--accent-soft); color: var(--accent); }
+  .voice-status-row.detected #voice-status-icon { display: none; }
+  .voice-status-row.detected #voice-status-text { flex: 1; min-width: 0; }
+  .wake-scan { display: flex; align-items: center; gap: 14px; width: 100%; }
+  .wake-scan-label { font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+  .wake-scan-track { position: relative; flex: 1; height: 4px; min-width: 48px; border-radius: 999px; background: var(--line-2); overflow: hidden; }
+  .wake-scan-track::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -35%;
+    width: 35%;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, currentColor, transparent);
+    animation: wake-sweep 1.4s ease-in-out infinite;
+  }
+  @keyframes wake-sweep { 0% { left: -35%; } 100% { left: 100%; } }
+
   /* Empty state */
 
   .convo-empty {
@@ -2267,6 +2299,22 @@ function hideVoiceStatus() {
   els.voiceStatusRow.hidden = true;
 }
 
+// The wakeword-just-fired acknowledgment -- a Siri/Alexa-style animated
+// line instead of static "Hey Green -- one moment..." text (see the CSS
+// comment above .voice-status-row.detected for why). Writes into the
+// EXISTING #voice-status-icon/#voice-status-text elements (hiding the
+// icon via CSS, using .innerHTML on the text slot) rather than replacing
+// the row's own children, so those cached element references stay valid
+// for every later setVoiceStatus() call in this same turn.
+function showWakeDetected(label) {
+  els.voiceStatusRow.hidden = false;
+  els.voiceStatusRow.className = "voice-status-row detected";
+  els.voiceStatusIcon.innerHTML = "";
+  els.voiceStatusText.innerHTML =
+    `<span class="wake-scan"><span class="wake-scan-label">${escapeHtml(label)}</span>` +
+    `<span class="wake-scan-track"></span></span>`;
+}
+
 // Simple single-pole low-pass filter, run over the FULL native-rate input
 // before any decimation -- REAL BUG FOUND AND FIXED (2026-09-27, reported
 // live: TTS-generated audio transcribed accurately, the farmer's own live
@@ -2905,10 +2953,10 @@ async function startWakewordListening() {
         // Ends when a turn gets no question within FOLLOWUP_WINDOW_MS.
         const label = wakewordLabel(detected.name);
         // The greeting is genuinely playing right now (gate = its promise,
-        // still pending) while the next socket connects in the background --
-        // that's the "answering" state, not "listening", even though no
-        // reply has been generated yet; see voiceStatusIconMarkup().
-        setVoiceStatus("speaking", `"${label}" — one moment…`);
+        // still pending) while the next socket connects in the background,
+        // but this gets its own distinct animated-line treatment rather
+        // than reusing the "speaking" pulse -- see showWakeDetected().
+        showWakeDetected(label);
         let gate = speakAndWait(WAKEWORD_GREETING);
         let firstTurn = true;
         while (voice.wakewordListening) {

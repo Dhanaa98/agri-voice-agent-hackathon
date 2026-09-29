@@ -2895,6 +2895,8 @@ function startPushToTalkAssembly() {
   );
   voice.dictateSocket = socket;
   let settled = false;
+  let ready = false;
+  const pending = [];  // PCM chunks captured before the socket said "ready" -- see the capture comment below.
 
   const finish = (transcript) => {
     if (settled) return;
@@ -2925,16 +2927,38 @@ function startPushToTalkAssembly() {
   // wait for.
   voice.dictateFinish = finish;
 
+  // REAL BUG FOUND AND FIXED (2026-09-30, reported live: "mic should
+  // work when pressed down and spoken, and released should send" --
+  // wasn't, for anything but a long hold). AssemblyAI's own connect()
+  // handshake takes ~4.6-4.8s (see StreamingASR.connect()'s docstring in
+  // farmer_server.py) -- capture used to start only once the server's
+  // "ready" message arrived, so a normal short press-speak-release
+  // gesture (a couple of seconds) finished, and the button was released,
+  // before capture had even begun: nothing was ever recorded. Now
+  // capture starts the INSTANT the button is pressed, in parallel with
+  // the handshake; frames captured before "ready" arrives are buffered
+  // here (in order) and flushed to the socket the moment it's actually
+  // ready, so no part of a quick utterance is silently dropped.
+  captureMicPcm((pcmBuffer) => {
+    if (ready && socket.readyState === WebSocket.OPEN) {
+      socket.send(pcmBuffer);
+    } else {
+      pending.push(pcmBuffer);
+    }
+  }).then((stop) => { voice.dictateStopCapture = stop; }).catch(() => {
+    addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
+    finish("");
+  });
+
   socket.addEventListener("message", (event) => {
     let data;
     try { data = JSON.parse(event.data); } catch (e) { return; }
     if (data.type === "ready") {
-      captureMicPcm((pcmBuffer) => {
-        if (socket.readyState === WebSocket.OPEN) socket.send(pcmBuffer);
-      }).then((stop) => { voice.dictateStopCapture = stop; }).catch(() => {
-        addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
-        finish("");
-      });
+      ready = true;
+      for (const buf of pending) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(buf);
+      }
+      pending.length = 0;
     } else if (data.type === "transcribed") {
       finish(data.transcript || "");
     } else if (data.type === "error") {

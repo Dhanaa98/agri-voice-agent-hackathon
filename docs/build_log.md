@@ -4,6 +4,33 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL BUG FOUND AND FIXED: iOS push-to-talk dropped a normal short
+  press-speak-release gesture entirely (2026-09-30).** User asked for
+  exactly the behavior `startPushToTalkAssembly()` was already supposed
+  to have -- hold to speak, release sends -- which flagged that it
+  wasn't actually working for a normal-length press. Root cause: mic
+  capture only started once the server's "ready" message arrived, and
+  AssemblyAI's own `connect()` handshake takes ~4.6-4.8s (documented in
+  `StreamingASR.connect()`'s own docstring) -- longer than a typical
+  press-speak-release gesture, so the farmer had usually already
+  released the button, and `stopPushToTalkAssembly()` had already told
+  capture to stop, before capture had even begun. Nothing was ever
+  recorded for anything but an unnaturally long hold. Fixed by starting
+  `captureMicPcm()` immediately at pointerdown instead of waiting for
+  "ready", buffering frames captured before the handshake completes in a
+  local array and flushing them to the socket (in order) the moment
+  "ready" actually arrives -- so a quick utterance is captured in full
+  and just delivered a little late, instead of not captured at all.
+  **Verified** via Playwright: a 400ms press-release cycle (well under
+  the handshake time) still shows `voice.dictateStopCapture` set
+  (capture running) immediately after pointerdown, `pushToTalkAction`
+  correctly set to `"send"` on release, and the safety-timeout recovery
+  path still correctly clears `recording`/`streaming` state ~8s later
+  when (as expected in a test with no real speech) no transcript ever
+  comes back. Could not verify actual transcribed WORDS landing in the
+  box from a real quick utterance (headless Chromium has no real speech
+  to send) -- worth a real-phone check: press, say a short question,
+  release, confirm it sends without touching Enter.
 - **Product name finalized as "Hey Green" (2026-09-30).** After
   weighing "Grasshopper" (rejected -- pest/crop-damage connotation for a
   farming app), "GreenThumb" (rejected -- an existing gardening brand,

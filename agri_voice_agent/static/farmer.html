@@ -2153,7 +2153,23 @@ async function loadCapabilities() {
   // custom audio pipeline, fills the text box live as you talk, same as
   // typing -- then Enter/Send works exactly as it already did. Gated on
   // the browser actually supporting it, not on any server capability.
-  if (browserSupportsSpeechRecognition()) {
+  // REAL BUG FOUND AND FIXED (2026-09-30, reported live: iPhone Chrome
+  // showed the mic button, pressed it, got "Couldn't access the
+  // microphone"). Every browser on iOS -- Chrome, Firefox, Edge included
+  // -- is required by Apple to run on WebKit, not each browser's own
+  // engine, and WebKit's SpeechRecognition support is unreliable: on some
+  // iOS versions `window.webkitSpeechRecognition` exists (so
+  // browserSupportsSpeechRecognition()'s presence check passes and the
+  // button shows) but calling `.start()` fails outright, which is exactly
+  // what a farmer on iOS would hit no matter which browser they picked.
+  // Presence-checking the constructor is not a reliable support signal on
+  // iOS, so it's excluded outright here rather than let the button show
+  // and fail. "Hey Green" hands-free voice is unaffected -- it streams
+  // raw mic audio to AssemblyAI server-side, not through this browser
+  // API, so it works the same on iOS as anywhere else.
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);  // iPadOS reports as a Mac
+  if (browserSupportsSpeechRecognition() && !isIOS) {
     els.micBtn.hidden = false;
   }
 

@@ -4,6 +4,27 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL BUG FOUND AND FIXED: push-to-talk mic button was shown, and
+  broken, on every iOS browser (2026-09-30, reported live: iPhone Chrome
+  showed the mic button, pressing it produced "Couldn't access the
+  microphone").** `browserSupportsSpeechRecognition()` gates the mic
+  button on `window.webkitSpeechRecognition` existing -- but Apple
+  requires every iOS browser (Chrome, Firefox, Edge, not just Safari) to
+  run on WebKit, not that browser's own engine, and WebKit's
+  `SpeechRecognition` support is unreliable: on some iOS versions the
+  constructor exists (so the presence check passes and the button shows)
+  but calling `.start()` fails outright. Presence-checking the
+  constructor is not a reliable support signal on iOS. Fixed by excluding
+  iOS outright (UA-sniffed, plus the iPadOS-reports-as-Mac case via
+  `maxTouchPoints`) from the mic-button gate, rather than show a button
+  that's guaranteed to fail there. The hands-free "Hey Green" wakeword
+  flow is unaffected either way -- it streams raw mic audio to
+  AssemblyAI server-side, not through this browser API, so voice input
+  still works on iOS through that path.
+  **Verified** via Playwright with a spoofed iPhone-Chrome user agent
+  (`CriOS/...`) vs. a spoofed Android-Chrome user agent: mic button
+  `hidden` is `true` on the iOS UA and `false` on the Android UA;
+  `node --check` passed.
 - **Wake animation restyled with a multi-shade green gradient; added
   cloud-TTS failure diagnostics for the still-unresolved mobile-silent bug
   (2026-09-30).** After the wake-animation display:inline fix (entry

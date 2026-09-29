@@ -47,6 +47,12 @@
     --you-bg: #1f4a39;
     --you-ink: #f2f7f3;
 
+    /* Wakeword-detected animation's gradient (see .wake-scan-track) --
+       deliberately its own tokens rather than reusing --accent: the bar
+       wants to travel through several shades for a "living" feel, not
+       sit at one flat color like the rest of the UI. */
+    --wake-grad: linear-gradient(90deg, #185c3a, #2f8f5c, #6fce9c, #2f8f5c, #185c3a);
+
     --shadow-sm: 0 1px 2px rgba(21, 32, 26, 0.05), 0 1px 1px rgba(21, 32, 26, 0.03);
     --shadow-md: 0 1px 2px rgba(21, 32, 26, 0.04), 0 6px 20px -6px rgba(21, 32, 26, 0.12);
     --shadow-lg: 0 24px 48px -12px rgba(21, 32, 26, 0.28);
@@ -86,6 +92,7 @@
       --danger-soft: #34201c;
       --you-bg: #2b6446;
       --you-ink: #f2f7f3;
+      --wake-grad: linear-gradient(90deg, #2f8f5c, #6fce9c, #b6f0d1, #6fce9c, #2f8f5c);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
       --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
       --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.7);
@@ -118,6 +125,7 @@
     --danger-soft: #34201c;
     --you-bg: #2b6446;
     --you-ink: #f2f7f3;
+    --wake-grad: linear-gradient(90deg, #2f8f5c, #6fce9c, #b6f0d1, #6fce9c, #2f8f5c);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
     --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.7);
@@ -742,12 +750,28 @@
     top: 0;
     width: 0%;
     height: 100%;
-    background: currentColor;
     border-radius: 999px;
+    /* REAL FEATURE ADDED (2026-09-30, user asked for the flat single-shade
+       bar to look more polished -- a gradient of greens flowing through
+       it rather than one solid color). --wake-grad (defined per-theme
+       near :root) is oversized to 250% of the bar's own width and its
+       background-position is animated independently of the width fill
+       below, so the color travels through the bar as it grows/shrinks
+       rather than just being a static gradient stretched to fit. */
+    background: var(--wake-grad);
+    background-size: 250% 100%;
+    box-shadow: 0 0 10px -1px var(--accent);
   }
-  .wake-scan-track::before { left: 0; animation: wake-fill 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
-  .wake-scan-track::after { right: 0; animation: wake-fill 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+  .wake-scan-track::before {
+    left: 0;
+    animation: wake-fill 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite, wake-shimmer 2.2s linear infinite;
+  }
+  .wake-scan-track::after {
+    right: 0;
+    animation: wake-fill 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite, wake-shimmer 2.2s linear infinite reverse;
+  }
   @keyframes wake-fill { 0% { width: 0%; } 50% { width: 50%; } 100% { width: 0%; } }
+  @keyframes wake-shimmer { 0% { background-position: 0% 0%; } 100% { background-position: 100% 0%; } }
 
   /* Empty state */
 
@@ -2306,7 +2330,19 @@ function speakAndWaitCloud(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     }).then((resp) => {
-      if (!resp.ok) { resolve(false); return; }
+      if (!resp.ok) {
+        // REAL FEATURE ADDED (2026-09-30, debugging "cloud voice works on
+        // desktop, not mobile" -- every failure point here used to
+        // swallow its reason and just resolve(false), so there was no way
+        // to tell WHICH step was actually failing on a given device
+        // without attaching a debugger. console.warn is enough: it never
+        // blocks/changes behavior (still falls back to browser TTS the
+        // same as before), just gives something to read from the mobile
+        // browser's own remote-debugging console.
+        console.warn("[cloud-tts] /speak returned", resp.status);
+        resolve(false);
+        return;
+      }
       return resp.blob().then((blob) => {
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
@@ -2326,10 +2362,19 @@ function speakAndWaitCloud(text) {
         const estimatedMs = Math.max(1500, text.length * 90);
         const timeoutId = setTimeout(() => settle(true), estimatedMs + 8000);
         audio.addEventListener("ended", () => settle(true), { once: true });
-        audio.addEventListener("error", () => settle(false), { once: true });
-        audio.play().catch(() => settle(false));
+        audio.addEventListener("error", () => {
+          console.warn("[cloud-tts] <audio> error", audio.error);
+          settle(false);
+        }, { once: true });
+        audio.play().catch((err) => {
+          console.warn("[cloud-tts] audio.play() rejected:", err && err.name, err && err.message);
+          settle(false);
+        });
       });
-    }).catch(() => resolve(false));
+    }).catch((err) => {
+      console.warn("[cloud-tts] fetch(/speak) failed:", err);
+      resolve(false);
+    });
   });
 }
 

@@ -2153,23 +2153,23 @@ async function loadCapabilities() {
   // custom audio pipeline, fills the text box live as you talk, same as
   // typing -- then Enter/Send works exactly as it already did. Gated on
   // the browser actually supporting it, not on any server capability.
-  // REAL BUG FOUND AND FIXED (2026-09-30, reported live: iPhone Chrome
-  // showed the mic button, pressed it, got "Couldn't access the
-  // microphone"). Every browser on iOS -- Chrome, Firefox, Edge included
-  // -- is required by Apple to run on WebKit, not each browser's own
-  // engine, and WebKit's SpeechRecognition support is unreliable: on some
-  // iOS versions `window.webkitSpeechRecognition` exists (so
-  // browserSupportsSpeechRecognition()'s presence check passes and the
-  // button shows) but calling `.start()` fails outright, which is exactly
-  // what a farmer on iOS would hit no matter which browser they picked.
-  // Presence-checking the constructor is not a reliable support signal on
-  // iOS, so it's excluded outright here rather than let the button show
-  // and fail. "Hey Green" hands-free voice is unaffected -- it streams
-  // raw mic audio to AssemblyAI server-side, not through this browser
-  // API, so it works the same on iOS as anywhere else.
-  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);  // iPadOS reports as a Mac
-  if (browserSupportsSpeechRecognition() && !isIOS) {
+  // REAL BUG FOUND AND FIXED, then a proper fix (2026-09-30, reported
+  // live: iPhone Chrome showed the mic button, pressed it, got "Couldn't
+  // access the microphone" -- then, after hiding the button there
+  // outright, "I need that and its functionality there"). Every browser
+  // on iOS -- Chrome, Firefox, Edge included -- is required by Apple to
+  // run on WebKit, not each browser's own engine, and WebKit's
+  // SpeechRecognition support is unreliable: on some iOS versions
+  // `window.webkitSpeechRecognition` exists (so
+  // browserSupportsSpeechRecognition()'s presence check passes) but
+  // calling `.start()` fails outright. Presence-checking the constructor
+  // is not a reliable support signal on iOS. Rather than just hide the
+  // button there, usesAssemblyDictation() (below) routes iOS push-to-talk
+  // through the SAME AssemblyAI streaming pipeline the "Hey Green"
+  // wakeword flow already uses successfully on iOS -- see
+  // startPushToTalkAssembly(). So the button shows on iOS too, whenever
+  // the server has that pipeline configured (mic_available).
+  if (browserSupportsSpeechRecognition() || (usesAssemblyDictation() && state.capabilities.mic_available)) {
     els.micBtn.hidden = false;
   }
 
@@ -2275,6 +2275,10 @@ const voice = {
   wakewordListening: false,
   voiceSocket: null,
   streaming: false,
+  // iOS push-to-talk fallback (AssemblyAI dictate socket) -- see
+  // startPushToTalkAssembly() below.
+  dictateSocket: null,
+  dictateStopCapture: null,
 };
 
 // ---------- Cloud TTS (elevenlabs-tts branch only, not on master) ----------
@@ -2748,6 +2752,26 @@ function browserSupportsSpeechRecognition() {
   return !!getSpeechRecognitionCtor();
 }
 
+// Every browser on iOS (Chrome, Firefox, Edge included) is required by
+// Apple to run on WebKit, not that browser's own engine -- so this is a
+// platform check, not a per-browser one. See startPushToTalkAssembly()'s
+// header comment for why iOS needs a different push-to-talk backend at
+// all, and loadCapabilities()'s mic-button gate for how this is used.
+function isIOS() {
+  return /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);  // iPadOS reports as a Mac
+}
+
+// Which push-to-talk backend pushToTalkPointerDown()/Up() should use.
+// iOS -> the AssemblyAI dictate socket (startPushToTalkAssembly()),
+// since browser SpeechRecognition is unreliable there even when the
+// constructor is present (see isIOS()'s comment); everywhere else that
+// actually supports it -> the browser's own SpeechRecognition
+// (startPushToTalk()), same as before.
+function usesAssemblyDictation() {
+  return isIOS();
+}
+
 // REAL FEATURE ADDED (2026-09-29, explicit user choice): hold-to-talk
 // instead of tap-to-toggle. Desktop (mouse): hold the button to speak,
 // release just stops listening -- Enter/Send still sends, unchanged.
@@ -2806,19 +2830,9 @@ function startPushToTalk() {
     // send"/"slide to cancel" outcome (decided back in
     // pushToTalkPointerUp(), well before this fires) is applied HERE,
     // once there's actually a final transcript to act on, not
-    // synchronously at the moment of release.
-    const action = voice.pushToTalkAction;
-    voice.pushToTalkAction = null;
-    if (action === "cancel") {
-      els.talkBox.value = baseText.trimEnd();
-      els.talkBox.dispatchEvent(new Event("input"));
-      els.talkBox.focus();
-    } else if (action === "send") {
-      if (els.talkBox.value.trim()) sendMessage();
-      else els.talkBox.focus();
-    } else {
-      els.talkBox.focus();
-    }
+    // synchronously at the moment of release. Shared with the iOS
+    // AssemblyAI fallback below -- see finishPushToTalk().
+    finishPushToTalk(baseText);
   };
   try {
     recognition.start();
@@ -2831,6 +2845,124 @@ function startPushToTalk() {
 
 function stopPushToTalk() {
   if (voice.speechRecognition) voice.speechRecognition.stop();
+}
+
+// Applies the send/cancel decision pushToTalkPointerUp() made, once a
+// final transcript actually exists to act on -- shared by both
+// push-to-talk backends (this function doesn't care which one filled
+// els.talkBox.value). `baseText` is what a touch "cancel" restores the
+// box to.
+function finishPushToTalk(baseText) {
+  const action = voice.pushToTalkAction;
+  voice.pushToTalkAction = null;
+  if (action === "cancel") {
+    els.talkBox.value = baseText.trimEnd();
+    els.talkBox.dispatchEvent(new Event("input"));
+    els.talkBox.focus();
+  } else if (action === "send") {
+    if (els.talkBox.value.trim()) sendMessage();
+    else els.talkBox.focus();
+  } else {
+    els.talkBox.focus();
+  }
+}
+
+// ---------- Push-to-talk fallback for iOS (AssemblyAI streaming, not
+// browser SpeechRecognition -- every iOS browser is WebKit under the
+// hood and its SpeechRecognition support is unreliable there, see
+// loadCapabilities()'s isIOS check and startPushToTalk()'s own header
+// comment). Same wire protocol and ASR pipeline as the wakeword flow's
+// /voice socket, already verified working end-to-end on a real iPhone --
+// just with dictate=1 so the server sends the transcript back instead of
+// routing it through _answer(). No live interim results the way
+// SpeechRecognition's onresult gives (AssemblyAI's finalized transcript
+// only arrives once), so unlike desktop, the text box fills only once
+// the farmer releases and the transcript comes back, not as they talk.
+function startPushToTalkAssembly() {
+  if (voice.streaming) return;
+  if (!state.capabilities?.mic_available) {
+    addMessage("error", null, "Voice input isn't set up on this server yet -- try typing instead.");
+    return;
+  }
+  voice.streaming = true;
+  const baseText = els.talkBox.value ? els.talkBox.value.replace(/\s+$/, "") + " " : "";
+  els.micBtn.classList.add("recording");
+  setVoiceStatus("listening", "Listening — release to stop…");
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(
+    `${proto}//${location.host}/voice?session_id=${encodeURIComponent(SESSION_ID)}&farmer_id=${encodeURIComponent(FARMER_ID)}&dictate=1`
+  );
+  voice.dictateSocket = socket;
+  let settled = false;
+
+  const finish = (transcript) => {
+    if (settled) return;
+    settled = true;
+    if (voice.dictateStopCapture) { voice.dictateStopCapture(); voice.dictateStopCapture = null; }
+    voice.streaming = false;
+    voice.dictateSocket = null;
+    voice.dictateFinish = null;
+    els.micBtn.classList.remove("recording");
+    hideVoiceStatus();
+    if (transcript) {
+      els.talkBox.value = baseText + transcript;
+      els.talkBox.dispatchEvent(new Event("input"));
+    }
+    try { socket.close(); } catch (e) { /* already closing/closed -- fine */ }
+    finishPushToTalk(baseText);
+  };
+  // REAL BUG FOUND AND FIXED (2026-09-30, caught in testing, not yet
+  // reported live): stopPushToTalkAssembly()'s safety timeout used to
+  // only call socket.close() and rely on the "close" event below to run
+  // finish() -- but the server-side asr.disconnect() call (a real
+  // network round trip to AssemblyAI to terminate that session) can take
+  // several seconds, so the browser's own "close" event lagged well
+  // behind the 8s timeout, leaving the mic button stuck showing
+  // "recording" for however long that teardown took. Exposing finish()
+  // itself here lets the timeout resolve the UI/state immediately,
+  // instead of waiting on a socket teardown the farmer has no reason to
+  // wait for.
+  voice.dictateFinish = finish;
+
+  socket.addEventListener("message", (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch (e) { return; }
+    if (data.type === "ready") {
+      captureMicPcm((pcmBuffer) => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(pcmBuffer);
+      }).then((stop) => { voice.dictateStopCapture = stop; }).catch(() => {
+        addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
+        finish("");
+      });
+    } else if (data.type === "transcribed") {
+      finish(data.transcript || "");
+    } else if (data.type === "error") {
+      addMessage("error", null, data.message || "Voice input error.");
+      finish("");
+    }
+  });
+  socket.addEventListener("error", () => finish(""));
+  socket.addEventListener("close", () => finish(""));
+}
+
+function stopPushToTalkAssembly() {
+  // Stop sending fresh audio right away (matches "release" everywhere
+  // else), but leave the socket itself open -- AssemblyAI still needs to
+  // finalize whatever was already sent, and the "transcribed" message
+  // handled in startPushToTalkAssembly()'s finish() is what actually
+  // tears the socket down. Safety timeout in case that message never
+  // arrives, so the mic button never gets stuck showing "recording".
+  if (voice.dictateStopCapture) { voice.dictateStopCapture(); voice.dictateStopCapture = null; }
+  const socket = voice.dictateSocket;
+  if (socket) {
+    setTimeout(() => {
+      if (voice.dictateSocket === socket && voice.dictateFinish) {
+        addMessage("error", null, "Didn't catch that -- try again.");
+        voice.dictateFinish("");  // resolves state immediately; also closes the socket
+      }
+    }, 8000);
+  }
 }
 
 // ---------- Wakeword detection (client-side ONNX, real openWakeWord pipeline) ----------
@@ -3241,7 +3373,13 @@ function pushToTalkPointerDown(e) {
   if (voice.streaming) return;
   e.preventDefault();
   try {
-    startPushToTalk();
+    // usesAssemblyDictation() -- see its own comment -- picks the backend
+    // per press rather than once at load, so it stays correct even if
+    // something about support detection changes mid-session (it won't in
+    // practice, but this matches the "decide fresh" pattern the rest of
+    // push-to-talk already uses instead of caching a stale decision).
+    if (usesAssemblyDictation()) startPushToTalkAssembly();
+    else startPushToTalk();
   } catch (err) {
     addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
     voice.streaming = false;
@@ -3279,7 +3417,8 @@ function pushToTalkPointerUp(e) {
   // threshold above. The actual send/cancel happens later, inside
   // recognition.onend, once the final transcript is really ready.
   voice.pushToTalkAction = pointerType === "touch" ? (cancelled ? "cancel" : "send") : null;
-  stopPushToTalk();
+  if (usesAssemblyDictation()) stopPushToTalkAssembly();
+  else stopPushToTalk();
 }
 
 els.micBtn.addEventListener("pointerdown", pushToTalkPointerDown);

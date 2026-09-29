@@ -1724,15 +1724,26 @@ async def chat(body: ChatIn) -> ChatOut:
 
 
 @app.websocket("/voice")
-async def voice_session(websocket: WebSocket, session_id: str | None = None, farmer_id: str | None = None) -> None:
+async def voice_session(
+    websocket: WebSocket, session_id: str | None = None, farmer_id: str | None = None, dictate: bool = False
+) -> None:
     """Real-microphone path: browser streams raw 16-bit PCM audio frames
     over this socket, server feeds them to StreamingASR, and the final
     transcript is routed the same way as a typed /chat message once ASR
-    reports end-of-turn -- see module docstring. UNVERIFIED end-to-end, no
-    AssemblyAI key configured in this project yet. `session_id` (a query
+    reports end-of-turn -- see module docstring. `session_id` (a query
     param, e.g. /voice?session_id=...) scopes farm/domain/diagnosis state
     to this browser tab -- see SessionState. `farmer_id` (same query-param
     style) scopes which farms exist at all -- see FarmStore/_use_farm_state().
+
+    `dictate=1` -- REAL FEATURE ADDED (2026-09-30, iOS push-to-talk: every
+    iOS browser is WebKit under the hood and its SpeechRecognition support
+    is unreliable there, see farmer.html's isIOS check, so iOS can't use
+    the browser's own dictation API the way desktop/Android do). Same
+    connection, same ASR pipeline already verified working end-to-end for
+    the wakeword flow -- just skips routing the transcript through
+    _answer() and sends it back as-is for the farmer to review and send
+    themselves, exactly matching what SpeechRecognition-based dictation
+    does on other platforms (fills the text box, never auto-answers).
     """
     await websocket.accept()
 
@@ -1744,9 +1755,14 @@ async def voice_session(websocket: WebSocket, session_id: str | None = None, far
     loop = asyncio.get_running_loop()
 
     def on_final_transcript(transcript: str) -> None:
-        asyncio.run_coroutine_threadsafe(
-            _handle_voice_transcript(websocket, transcript, session_id, farmer_id), loop
-        )
+        if dictate:
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_json({"type": "transcribed", "transcript": transcript}), loop
+            )
+        else:
+            asyncio.run_coroutine_threadsafe(
+                _handle_voice_transcript(websocket, transcript, session_id, farmer_id), loop
+            )
 
     try:
         asr = StreamingASR(on_final_transcript=on_final_transcript)

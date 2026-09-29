@@ -4,6 +4,67 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL FEATURE ADDED: push-to-talk dictation on iOS, via the AssemblyAI
+  pipeline instead of the browser's own SpeechRecognition (2026-09-30).**
+  Follow-up to the entry directly below: hiding the mic button on iOS
+  fixed the broken-button symptom, but the user then asked for the
+  button AND its functionality back on mobile -- fair, since hiding it
+  just traded "broken" for "missing" rather than actually solving
+  anything. iOS can't use browser SpeechRecognition at all (every iOS
+  browser is WebKit, and WebKit's implementation is unreliable there --
+  see the entry below), but this project already has a second,
+  independently-working mic pipeline for exactly this platform: the
+  `/voice` WebSocket + real AssemblyAI streaming that the "Hey Green"
+  wakeword flow already uses successfully on iOS (confirmed working by
+  the user directly). Reused it for push-to-talk too, via a new
+  `dictate=1` query flag on `/voice` (`farmer_server.py`): with it set,
+  `on_final_transcript` sends `{"type": "transcribed", "transcript":
+  ...}` and stops there, instead of routing the transcript through
+  `_answer()` -- so the browser gets the raw transcript back to put in
+  the text box for the farmer to review and send themselves, matching
+  exactly what SpeechRecognition-based dictation does on other platforms
+  (fills the box, never auto-answers).
+  Frontend (`farmer.html`): `startPushToTalkAssembly()`/
+  `stopPushToTalkAssembly()` mirror `startPushToTalk()`/`stopPushToTalk()`'s
+  contract using this socket + the existing `captureMicPcm()` helper
+  (already used by the wakeword path) instead of `SpeechRecognition`.
+  `usesAssemblyDictation()` (= `isIOS()`) is checked in
+  `pushToTalkPointerDown`/`Up` to pick the backend, and in
+  `loadCapabilities()`'s mic-button gate so the button shows on iOS
+  whenever the server has `mic_available` (AssemblyAI configured), not
+  just when `SpeechRecognition` is present. The send/cancel decision
+  logic (desktop: release just stops, Enter sends; touch: release
+  sends, slide-to-cancel discards) was extracted into a shared
+  `finishPushToTalk()` so both backends apply it identically -- neither
+  backend had to duplicate that logic.
+  One real difference from SpeechRecognition: no live interim results.
+  AssemblyAI's finalized transcript only arrives once, so the text box
+  fills only after the farmer releases and the transcript comes back,
+  not word-by-word as they talk. Accepted as the honest tradeoff for a
+  platform where the live-fill API doesn't actually work.
+  **REAL BUG FOUND AND FIXED IN TESTING** (caught before it reached the
+  user): the safety timeout in `stopPushToTalkAssembly()` originally
+  only called `socket.close()` and relied on the browser's own "close"
+  event to reset the UI -- but the server's `asr.disconnect()` is a real
+  network round trip to AssemblyAI to terminate that session, which can
+  take several seconds, so the "close" event lagged well behind the 8s
+  timeout and the mic button stayed stuck on "recording" for however
+  long that teardown took (confirmed via Playwright: `voice.streaming`
+  was still `true` 9.5s after release). Fixed by exposing the finishing
+  closure itself as `voice.dictateFinish` so the safety timeout resolves
+  the UI/state immediately, without waiting on a teardown the farmer has
+  no reason to wait for.
+  **Verified:** `python -m py_compile`/`node --check` both passed.
+  Playwright with a spoofed iPhone-Chrome UA: mic button visible,
+  `usesAssemblyDictation()` true, a real pointerdown/pointerup cycle
+  opens the `/voice?...&dictate=1` socket with no console errors, and
+  (after the fix above) the safety-timeout recovery path correctly
+  clears `recording`/`streaming` state within the 8s window instead of
+  hanging. Re-verified Android Chrome and desktop UAs are unaffected
+  (still route through `SpeechRecognition` as before). Could not verify
+  actual transcribed TEXT content end-to-end here (headless Chromium's
+  fake audio device has no real speech to transcribe) -- worth a manual
+  check on the real iPhone to confirm words actually land in the box.
 - **REAL BUG FOUND AND FIXED: push-to-talk mic button was shown, and
   broken, on every iOS browser (2026-09-30, reported live: iPhone Chrome
   showed the mic button, pressing it produced "Couldn't access the

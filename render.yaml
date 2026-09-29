@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: agri-voice-agent-farmer
+    name: hey-green
     env: python
     plan: free
     buildCommand: pip install -r requirements-deploy.txt

@@ -4,6 +4,35 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Wake animation restyled with a multi-shade green gradient; added
+  cloud-TTS failure diagnostics for the still-unresolved mobile-silent bug
+  (2026-09-30).** After the wake-animation display:inline fix (entry
+  below), user asked to make it "more professional" -- the fill bars were
+  a flat single color (`currentColor`). Added a `--wake-grad` token (own
+  tokens per light/dark theme, not reusing `--accent`, since this wants to
+  travel through several shades rather than sit at one flat color like the
+  rest of the UI) -- a 5-stop green gradient, oversized to 250% of the
+  bar's width with its own `background-position` animation
+  (`wake-shimmer`, 2.2s, the two bars running in opposite directions) layered
+  on top of the existing width-fill animation, plus a soft `box-shadow`
+  glow in `--accent`. Verified via Playwright screenshots a beat apart
+  that the gradient position visibly differs between frames (not just a
+  static gradient stretched to fit).
+  Separately, the previous entry's mobile-cloud-TTS-unlock fix (silent WAV
+  data URI instead of a sourceless `Audio()`) did NOT resolve the report --
+  user says mobile is still falling back to the browser's default voice.
+  Without a real mobile device in this environment to attach a debugger
+  to, added `console.warn` at every failure point inside
+  `speakAndWaitCloud()` (non-`ok` `/speak` response, `fetch()` rejection,
+  `<audio>` `error` event, `audio.play()` rejection) -- previously every
+  one of these silently `resolve(false)`d with no trace, so there was no
+  way to tell which step was actually failing on a given device. Doesn't
+  change behavior (still falls back to browser TTS exactly as before),
+  just makes the failure visible via the mobile browser's own
+  remote-debugging console next time this is tested live. **Next step:**
+  reproduce on the actual phone with remote debugging attached (Safari
+  Web Inspector for iOS, chrome://inspect for Android) and read which
+  `[cloud-tts]` warning fires.
 - **Three REAL BUGS FOUND AND FIXED (2026-09-30, all reported live from
   the same session): wake animation invisible, LLM hallucinating a farm
   relocation that never happened, mobile cloud-voice silent.**

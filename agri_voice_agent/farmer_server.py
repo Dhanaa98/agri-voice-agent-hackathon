@@ -809,7 +809,9 @@ def _is_mic_check(text: str) -> bool:
 
 
 _LOCATION_REPLY_PREFIX = re.compile(
-    r"^(?:(?:it'?s|it is|my farm is|the farm is|we'?re|we are|i'?m|i am)\s+)?(?:(?:in|at|near|around)\s+)?",
+    r"^(?:(?:it'?s|it is|my farm is|the farm is|we'?re|we are|i'?m|i am"
+    r"|the\s+(?:\w+\s+)?farm(?:'?s)?\s+location\s+is"
+    r"|(?:the\s+)?location\s+is)\s+)?(?:(?:in|at|near|around)\s+)?",
     re.IGNORECASE,
 )
 
@@ -1266,7 +1268,17 @@ def _answer(
             # no longer exists.
             session.pending_new_farm_location = None
         else:
-            place = _clean_farm_phrase(text)
+            # REAL BUG FOUND AND FIXED (2026-09-29, live screenshot: "In
+            # Colombo." and "The second farm location is Jaffna." both got
+            # "sorry, I didn't catch a place name there"). This used
+            # _clean_farm_phrase() -- punctuation-only stripping -- so the
+            # lead-in words ("In ", "The second farm location is ") were
+            # sent to the geocoder as part of the place name and failed to
+            # resolve. Swapped to _location_from_reply(), the same
+            # lead-in-stripping helper the ordinary pending-weather/crop-
+            # location flow already uses correctly (see
+            # pending_location_question above).
+            place = _location_from_reply(text)
             farm = _farm_state.farms[idx]
             # Geocode it for real rather than guessing from word shape --
             # REAL BUG FOUND AND FIXED (2026-09-27): a word-list heuristic

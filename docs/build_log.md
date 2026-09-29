@@ -4,6 +4,42 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL BUG FOUND AND FIXED: new-farm location capture rejected accurate
+  answers; REAL FEATURE ADDED: thicker double-sided wake animation with no
+  label text (2026-09-29).** User reported (live screenshot): answering
+  "what town or area is your farm in?" with "In Colombo." or "The second
+  farm location is Jaffna." got "Sorry, I didn't catch a place name there"
+  even though both are accurate, well-formed answers.
+  Root cause: the `pending_new_farm_location` branch in `farmer_server.py`
+  cleaned the reply with `_clean_farm_phrase()` (punctuation-only
+  stripping), so lead-in words ("In ", "The second farm location is ")
+  were sent to the geocoder as part of the place name and failed to
+  resolve -- meanwhile the sibling `pending_location_question` flow
+  (ordinary "where's my farm" weather/crop asks) already used
+  `_location_from_reply()`, which strips exactly these lead-ins, correctly.
+  Fixed by switching the new-farm branch to `_location_from_reply()` too,
+  and extended `_LOCATION_REPLY_PREFIX` to also strip
+  "the (word) farm's location is" / "the location is" phrasing, which
+  neither flow handled before.
+  Second, unrelated request in the same message: chat font-size looked
+  unchanged in the screenshot despite the 2026-09-29 14.5px->13.5px
+  change earlier this session -- re-verified `.bubble`/`#talk-box` are at
+  13.5px in the committed file and render that way in a fresh Playwright
+  load; likely the screenshot was from a stale/cached page rather than a
+  real regression (nothing in this session's diff touches those rules
+  again).
+  Also in this pass: the wakeword-detected animation (thin single-sweep
+  bar from the earlier 2026-09-29 entry below) was redone per a follow-up
+  ask -- thicker (10px), fills from BOTH edges toward the center and
+  retreats, on a loop (`::before`/`::after` each animating `width: 0% ->
+  50% -> 0%`, one anchored `left: 0`, one `right: 0`), and the "Hey Green"
+  label text next to it was removed entirely -- just the bar now, no
+  copy. `showWakeDetected(label)` keeps its `label` parameter (unused) so
+  its one call site didn't need touching.
+  **Verified:** `python -m py_compile farmer_server.py` and `node --check`
+  on the extracted script both passed; Playwright confirmed
+  `showWakeDetected()` renders `<span class="wake-scan-track">` with no
+  label text and a 10px computed height, zero console errors.
 - **REAL FEATURE ADDED: hold-to-talk mic (WhatsApp-style), collapsible
   sidebar, smaller chat font (2026-09-29).** User asked for three things
   in `farmer.html` (frontend-only, no server changes):

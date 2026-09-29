@@ -4,6 +4,45 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL FEATURE ADDED: hold-to-talk mic (WhatsApp-style), collapsible
+  sidebar, smaller chat font (2026-09-29).** User asked for three things
+  in `farmer.html` (frontend-only, no server changes):
+  1. Mic button changed from tap-to-toggle to press-and-HOLD. Desktop
+     (mouse): hold to speak, releasing just stops listening -- Enter still
+     sends, unchanged. Touch (mobile): hold to speak, releasing SENDS
+     immediately; sliding sideways past an 80px threshold while still
+     held arms a cancel instead (WhatsApp voice-message gesture) --
+     releasing while armed discards the dictated text instead of sending.
+     Implemented with one set of Pointer Events handlers
+     (`pushToTalkPointerDown/Move/Up`) branching on `e.pointerType`
+     ("mouse" vs "touch") rather than separate mouse/touch listeners, with
+     `setPointerCapture` so a drag outside the button's bounds while held
+     is still tracked. The send/cancel decision is stashed in
+     `voice.pushToTalkAction` at pointerup and only ACTED ON inside
+     `recognition.onend`, because `SpeechRecognition.stop()` is async and
+     the real final transcript isn't ready until onend fires -- acting at
+     pointerup time would send/restore stale text.
+  2. Left sidebar (Weather/Crop/Plant Health) can now collapse to an
+     icon-only rail via a new toggle button, giving the chat panel more
+     width -- desktop only (`.sidebar-collapse-btn` hidden below the
+     existing 900px mobile-drawer breakpoint, since the drawer already
+     solves the same problem differently there). State persisted in
+     `localStorage.sidebarCollapsed`, same pattern as `farmLocation`.
+  3. Chat bubble and composer textbox font-size reduced 14.5px -> 13.5px
+     per the user's "reduce font size" request.
+  **Verified live** (local server on port 8001, `farm_state.json`
+  backed up/restored around the test): `node --check` on the extracted
+  script passed; Playwright confirmed zero console/page errors; sidebar
+  collapse toggle applies/removes `.sidebar-collapsed` on click; mouse
+  pointerdown/pointerup correctly starts/stops recording (desktop path);
+  simulated touch pointerdown -> pointermove (dragged 120px) ->
+  pointerup correctly showed "Slide to cancel" -> armed "Release to
+  cancel" -> discarded the dictated text on release (touch cancel path).
+  Did NOT verify actual `SpeechRecognition` dictation content end-to-end
+  (headless Chromium has no real mic/ASR) or the touch "release sends"
+  success path's `sendMessage()` call specifically -- both are
+  mechanically wired the same way as the verified cancel path, but worth
+  a manual check on a real phone before the demo.
 - **Struggling-to-create-a-farm bug, plus list-farms and natural add-farm
   phrasing (2026-09-27).** User reported: "I need to create a farm",
   struggle to give the location a few times, then finally say it -- and

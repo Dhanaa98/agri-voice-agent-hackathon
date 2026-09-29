@@ -165,6 +165,51 @@
     min-height: 0;
     display: grid;
     grid-template-columns: 272px minmax(0, 1fr);
+    position: relative;
+    transition: grid-template-columns 0.18s ease;
+  }
+  /* REAL FEATURE ADDED (2026-09-29, user asked for the sidebar to be
+     collapsible to icons-only so the chat gets more room). Desktop only
+     -- below the tablet/phone breakpoint the sidebar is already a
+     slide-out drawer (see "Tablet / phone" below), where icon-only
+     collapse wouldn't make sense on top of that. */
+  .shell.sidebar-collapsed { grid-template-columns: 76px minmax(0, 1fr); }
+  .shell.sidebar-collapsed .brand-text,
+  .shell.sidebar-collapsed .side-label,
+  .shell.sidebar-collapsed .nav-text,
+  .shell.sidebar-collapsed #farms-section,
+  .shell.sidebar-collapsed .sidebar-foot span {
+    display: none;
+  }
+  .shell.sidebar-collapsed .brand,
+  .shell.sidebar-collapsed .nav-btn {
+    justify-content: center;
+  }
+  .shell.sidebar-collapsed .sidebar-foot { justify-content: center; }
+
+  .sidebar-collapse-btn {
+    position: absolute;
+    left: 272px;
+    top: 28px;
+    transform: translateX(-50%);
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--surface);
+    border: 1px solid var(--line-2);
+    color: var(--ink-2);
+    box-shadow: var(--shadow-sm);
+    z-index: 30;
+    transition: left 0.18s ease, transform 0.18s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .sidebar-collapse-btn .ic { width: 14px; height: 14px; transition: transform 0.18s ease; }
+  .sidebar-collapse-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .shell.sidebar-collapsed .sidebar-collapse-btn { left: 76px; }
+  .shell.sidebar-collapsed .sidebar-collapse-btn .ic { transform: rotate(180deg); }
+  @media (max-width: 900px) {
+    .sidebar-collapse-btn { display: none; }
   }
 
   /* ---------- Sidebar ---------- */
@@ -778,7 +823,7 @@
     max-width: min(78%, 640px);
     padding: 11px 15px;
     border-radius: 16px;
-    font-size: 14.5px;
+    font-size: 13.5px;
     line-height: 1.55;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -868,6 +913,7 @@
     border-top: 1px solid var(--line);
     background: var(--surface);
     flex-shrink: 0;
+    position: relative;
   }
 
   #talk-box {
@@ -882,7 +928,7 @@
     background: var(--surface-2);
     color: var(--ink);
     font-family: var(--font-body);
-    font-size: 14.5px;
+    font-size: 13.5px;
     line-height: 1.45;
     transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
   }
@@ -901,7 +947,19 @@
   }
   #mic-btn .ic, #send-btn .ic { width: 19px; height: 19px; }
 
-  #mic-btn { border: 1px solid var(--line-2); background: var(--surface); color: var(--ink-2); }
+  #mic-btn {
+    border: 1px solid var(--line-2);
+    background: var(--surface);
+    color: var(--ink-2);
+    /* Hold-to-talk (2026-09-29, explicit user choice: press and hold to
+       speak, not tap-to-toggle) needs to track a touch drag for the
+       slide-to-cancel gesture without the browser's own scroll/pan
+       gestures competing for the same pointer -- see
+       pushToTalkPointerMove(). */
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
   #mic-btn:hover { border-color: var(--accent); color: var(--accent); }
   #mic-btn.recording {
     background: var(--danger);
@@ -910,6 +968,35 @@
     animation: rec 1.4s ease-in-out infinite;
   }
   @keyframes rec { 0%, 100% { box-shadow: 0 0 0 0 rgba(173, 59, 42, 0.35); } 50% { box-shadow: 0 0 0 6px rgba(173, 59, 42, 0); } }
+  /* Dragged past the slide-to-cancel threshold (touch only) -- releasing
+     now discards instead of sending, WhatsApp-voice-message style. */
+  #mic-btn.recording.cancel-armed {
+    background: var(--ink-3);
+    border-color: var(--ink-3);
+    animation: none;
+  }
+
+  .slide-cancel-hint {
+    position: absolute;
+    right: 62px;
+    bottom: 100%;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    background: var(--ink);
+    color: var(--surface);
+    font-family: var(--font-ui);
+    font-size: 12.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    box-shadow: var(--shadow-md);
+    pointer-events: none;
+  }
+  .slide-cancel-hint .ic { width: 13px; height: 13px; }
+  .slide-cancel-hint.armed { background: var(--danger); }
 
   #send-btn { border: none; background: var(--accent); color: var(--accent-ink); }
   #send-btn:hover { background: var(--accent-hover); }
@@ -1197,6 +1284,7 @@
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></symbol>
     <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/><circle cx="12" cy="12" r="7"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
   </defs>
 </svg>
 
@@ -1212,9 +1300,12 @@
 
 <div class="drawer-backdrop" id="drawer-backdrop"></div>
 
-<div class="shell">
+<div class="shell" id="shell">
+  <button type="button" class="sidebar-collapse-btn" id="sidebar-collapse-btn" aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
+    <svg class="ic"><use href="#i-chevron-left"/></svg>
+  </button>
   <aside class="sidebar" id="sidebar">
-    <button type="button" class="brand" id="brand-btn" aria-label="Show all conversations">
+    <button type="button" class="brand" id="brand-btn" aria-label="Show all conversations" title="Farm Assistant">
       <span class="brand-mark"><svg class="ic"><use href="#i-wheat"/></svg></span>
       <span class="brand-text">
         <span class="brand-name">Farm Assistant</span>
@@ -1225,21 +1316,21 @@
     <nav aria-label="Assistants">
       <div class="side-label">Assistants</div>
       <div class="nav-list" id="nav-list">
-        <button type="button" class="nav-btn" data-view="weather" id="btn-weather">
+        <button type="button" class="nav-btn" data-view="weather" id="btn-weather" title="Weather">
           <span class="nav-icon"><svg class="ic"><use href="#i-weather"/></svg></span>
           <span class="nav-text">
             <div class="nav-title">Weather</div>
             <div class="nav-sub">Conditions &amp; forecast</div>
           </span>
         </button>
-        <button type="button" class="nav-btn" data-view="crop" id="btn-crop">
+        <button type="button" class="nav-btn" data-view="crop" id="btn-crop" title="Crop">
           <span class="nav-icon"><svg class="ic"><use href="#i-crop"/></svg></span>
           <span class="nav-text">
             <div class="nav-title">Crop</div>
             <div class="nav-sub">What to plant now</div>
           </span>
         </button>
-        <button type="button" class="nav-btn" data-view="plant" id="btn-plant">
+        <button type="button" class="nav-btn" data-view="plant" id="btn-plant" title="Plant Health">
           <span class="nav-icon"><svg class="ic"><use href="#i-plant"/></svg></span>
           <span class="nav-text">
             <div class="nav-title">Plant Health</div>
@@ -1249,7 +1340,7 @@
       </div>
     </nav>
 
-    <section aria-label="Your farms">
+    <section aria-label="Your farms" id="farms-section">
       <div class="side-label">Your farms</div>
       <div class="farms-list" id="farms-list"></div>
       <div class="farms-empty" id="farms-empty" hidden>No farms yet.</div>
@@ -1350,7 +1441,8 @@
 
       <div class="composer">
         <textarea id="talk-box" placeholder="Ask about weather, crops, or a plant problem…" rows="1" aria-label="Your question"></textarea>
-        <button id="mic-btn" type="button" title="Speak instead" aria-label="Speak instead" hidden><svg class="ic"><use href="#i-mic"/></svg></button>
+        <button id="mic-btn" type="button" title="Hold to speak" aria-label="Hold to speak" hidden><svg class="ic"><use href="#i-mic"/></svg></button>
+        <div class="slide-cancel-hint" id="slide-cancel-hint" hidden><svg class="ic"><use href="#i-chevron-left"/></svg><span id="slide-cancel-hint-text">Slide to cancel</span></div>
         <button id="send-btn" type="button" title="Send" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
       </div>
     </div>
@@ -1472,6 +1564,8 @@ const els = {
   talkBox: document.getElementById("talk-box"),
   sendBtn: document.getElementById("send-btn"),
   micBtn: document.getElementById("mic-btn"),
+  slideCancelHint: document.getElementById("slide-cancel-hint"),
+  slideCancelHintText: document.getElementById("slide-cancel-hint-text"),
   capabilityNote: document.getElementById("capability-note"),
   locationBox: document.getElementById("location-box"),
   sumLocation: document.getElementById("sum-location"),
@@ -1497,6 +1591,8 @@ const els = {
   modalDetectBtn: document.getElementById("modal-detect-btn"),
   modalSkipBtn: document.getElementById("modal-skip-btn"),
   sidebar: document.getElementById("sidebar"),
+  shell: document.getElementById("shell"),
+  sidebarCollapseBtn: document.getElementById("sidebar-collapse-btn"),
   drawerBackdrop: document.getElementById("drawer-backdrop"),
   drawerToggle: document.getElementById("farms-drawer-toggle"),
   clearChatBtn: document.getElementById("clear-chat-btn"),
@@ -2573,6 +2669,15 @@ function browserSupportsSpeechRecognition() {
   return !!getSpeechRecognitionCtor();
 }
 
+// REAL FEATURE ADDED (2026-09-29, explicit user choice): hold-to-talk
+// instead of tap-to-toggle. Desktop (mouse): hold the button to speak,
+// release just stops listening -- Enter/Send still sends, unchanged.
+// Touch (mobile): hold to speak, release sends immediately (no extra tap
+// needed), and dragging sideways past a threshold before releasing
+// cancels instead -- the same WhatsApp-voice-message gesture. Both are
+// driven by the SAME pointerdown/pointerup handlers (see
+// pushToTalkPointerDown() etc. below), branching on `e.pointerType`, so
+// there's one push-to-talk implementation, not two.
 function startPushToTalk() {
   if (voice.streaming) return;
   const Ctor = getSpeechRecognitionCtor();
@@ -2587,13 +2692,15 @@ function startPushToTalk() {
   recognition.interimResults = true;
   voice.speechRecognition = recognition;
   voice.streaming = true;
-  // The text the farmer had already typed before tapping the mic --
-  // recognized speech is appended after it, not replacing it, so tapping
-  // the mic mid-sentence to add a word works the way it would while typing.
+  // The text the farmer had already typed before pressing the mic --
+  // recognized speech is appended after it, not replacing it, so holding
+  // the mic mid-sentence to add a word works the way it would while
+  // typing. Also what a touch "cancel" restores the box to -- see
+  // pushToTalkPointerUp().
   const baseText = els.talkBox.value ? els.talkBox.value.replace(/\s+$/, "") + " " : "";
 
   els.micBtn.classList.add("recording");
-  setVoiceStatus("listening", "Listening — tap the mic again when you're done…");
+  setVoiceStatus("listening", "Listening — release to stop…");
 
   recognition.onresult = (event) => {
     let transcript = "";
@@ -2615,14 +2722,31 @@ function startPushToTalk() {
     voice.speechRecognition = null;
     els.micBtn.classList.remove("recording");
     hideVoiceStatus();
-    els.talkBox.focus();
+    // Recognition only finishes processing (and gives its final result)
+    // some moments AFTER .stop() was called -- so the touch "release to
+    // send"/"slide to cancel" outcome (decided back in
+    // pushToTalkPointerUp(), well before this fires) is applied HERE,
+    // once there's actually a final transcript to act on, not
+    // synchronously at the moment of release.
+    const action = voice.pushToTalkAction;
+    voice.pushToTalkAction = null;
+    if (action === "cancel") {
+      els.talkBox.value = baseText.trimEnd();
+      els.talkBox.dispatchEvent(new Event("input"));
+      els.talkBox.focus();
+    } else if (action === "send") {
+      if (els.talkBox.value.trim()) sendMessage();
+      else els.talkBox.focus();
+    } else {
+      els.talkBox.focus();
+    }
   };
   try {
     recognition.start();
   } catch (err) {
     voice.streaming = false;
     voice.speechRecognition = null;
-    throw err;  // caller (micBtn click handler) shows the permission-error message
+    throw err;  // caller (pushToTalkPointerDown) shows the permission-error message
   }
 }
 
@@ -3014,20 +3138,75 @@ function stopWakewordListening() {
   hideVoiceStatus();
 }
 
-els.micBtn.addEventListener("click", () => {
-  if (voice.streaming) {
-    stopPushToTalk();
-  } else {
-    try {
-      startPushToTalk();
-    } catch (err) {
-      addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
-      voice.streaming = false;
-      els.micBtn.classList.remove("recording");
-      hideVoiceStatus();
-    }
+// Hold-to-talk pointer handling (see the comment above startPushToTalk()).
+// One set of handlers for mouse and touch, branching on e.pointerType only
+// where the two need to differ.
+let ptState = null;  // { pointerId, pointerType, startX, cancelled } while a press is active
+const SLIDE_CANCEL_PX = 80;  // how far (px) a touch drag has to travel to arm cancel
+
+function showSlideCancelHint() {
+  els.slideCancelHint.hidden = false;
+  updateSlideCancelHint(false);
+}
+
+function updateSlideCancelHint(armed) {
+  els.slideCancelHint.classList.toggle("armed", armed);
+  els.slideCancelHintText.textContent = armed ? "Release to cancel" : "Slide to cancel";
+}
+
+function hideSlideCancelHint() {
+  els.slideCancelHint.hidden = true;
+}
+
+function pushToTalkPointerDown(e) {
+  if (voice.streaming) return;
+  e.preventDefault();
+  try {
+    startPushToTalk();
+  } catch (err) {
+    addMessage("error", null, "Couldn't access the microphone. Check your browser's permission settings.");
+    voice.streaming = false;
+    els.micBtn.classList.remove("recording");
+    hideVoiceStatus();
+    return;
   }
-});
+  ptState = { pointerId: e.pointerId, pointerType: e.pointerType, startX: e.clientX, cancelled: false };
+  els.micBtn.setPointerCapture(e.pointerId);
+  if (e.pointerType === "touch") showSlideCancelHint();
+}
+
+function pushToTalkPointerMove(e) {
+  if (!ptState || e.pointerId !== ptState.pointerId || ptState.pointerType !== "touch") return;
+  const dx = ptState.startX - e.clientX;  // positive = dragged left, towards cancel
+  if (dx > SLIDE_CANCEL_PX && !ptState.cancelled) {
+    ptState.cancelled = true;
+    els.micBtn.classList.add("cancel-armed");
+    updateSlideCancelHint(true);
+  } else if (dx <= SLIDE_CANCEL_PX && ptState.cancelled) {
+    ptState.cancelled = false;
+    els.micBtn.classList.remove("cancel-armed");
+    updateSlideCancelHint(false);
+  }
+}
+
+function pushToTalkPointerUp(e) {
+  if (!ptState || e.pointerId !== ptState.pointerId) return;
+  const { pointerType, cancelled } = ptState;
+  ptState = null;
+  els.micBtn.classList.remove("cancel-armed");
+  hideSlideCancelHint();
+  // Desktop: releasing just stops listening -- Enter/Send still sends.
+  // Touch: releasing sends immediately, unless slid past the cancel
+  // threshold above. The actual send/cancel happens later, inside
+  // recognition.onend, once the final transcript is really ready.
+  voice.pushToTalkAction = pointerType === "touch" ? (cancelled ? "cancel" : "send") : null;
+  stopPushToTalk();
+}
+
+els.micBtn.addEventListener("pointerdown", pushToTalkPointerDown);
+els.micBtn.addEventListener("pointermove", pushToTalkPointerMove);
+els.micBtn.addEventListener("pointerup", pushToTalkPointerUp);
+els.micBtn.addEventListener("pointercancel", pushToTalkPointerUp);
 
 // No manual on/off control for wakeword listening -- see the module
 // header comment. It starts once, from the one-time enable-voice modal
@@ -3177,6 +3356,24 @@ try {
     state.locationPromptSeen = true;
   }
 } catch (e) { /* private mode etc -- fine to skip */ }
+
+// Collapsible sidebar (desktop only -- see the .shell.sidebar-collapsed
+// CSS comment for why this doesn't apply below the mobile drawer
+// breakpoint). Persisted so the choice survives a reload, same pattern
+// as farmLocation above.
+function setSidebarCollapsed(collapsed) {
+  els.shell.classList.toggle("sidebar-collapsed", collapsed);
+  els.sidebarCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
+  els.sidebarCollapseBtn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  els.sidebarCollapseBtn.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+  try { localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "0"); } catch (e) { /* private mode etc -- fine to skip */ }
+}
+try {
+  if (localStorage.getItem("sidebarCollapsed") === "1") setSidebarCollapsed(true);
+} catch (e) { /* private mode etc -- fine to skip */ }
+els.sidebarCollapseBtn.addEventListener("click", () => {
+  setSidebarCollapsed(!els.shell.classList.contains("sidebar-collapsed"));
+});
 
 setActiveView("general");
 els.talkBox.focus();

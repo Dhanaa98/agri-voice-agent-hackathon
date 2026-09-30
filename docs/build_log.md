@@ -4,6 +4,32 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL FEATURE ADDED: manual wake-toggle button in the panel header
+  (2026-09-30, user asked for a way to activate the wakeword manually if
+  needed).** The header pill (`#wake-indicator`) was previously a passive
+  `<span>`, `hidden` until listening actually started via the one-time
+  "Enable voice" modal -- no way to (re)start it afterward if the modal
+  was skipped or dismissed. Converted to a real always-visible `<button>`:
+  click starts listening if off, stops it if on. Shares the same
+  audio-unlock priming the modal's own button does (factored into
+  `unlockAudioAndStartWakeword()`) since this is just as much a real user
+  gesture. Also fixed a race caught in testing: a rapid double-click
+  before the async mic/model setup finished could start two overlapping
+  wakeword pipelines (`voice.wakewordListening` alone doesn't guard
+  against a second call arriving while the first is still mid-flight) --
+  added `voice._wakewordStarting`, set synchronously before any `await`,
+  to close that window.
+  **REAL BUG FOUND (this session's own oversight): this feature was built
+  and verified locally but never committed or pushed** -- when the user
+  reported "I don't see the button," `git status` showed it sitting as an
+  uncommitted local change since earlier in the session (other work --
+  the deck edits, the OpenAI fallback -- got committed in between without
+  this). Committed and pushed now. Worth flagging as a process gap: a
+  feature isn't actually shipped until it's on `master`, verifying it
+  works locally isn't the same as delivering it.
+  **Verified:** `node --check` passed; Playwright screenshot on a
+  simulated iPhone viewport confirms the "Enable voice" pill renders
+  correctly in the panel header, next to the clear-chat button.
 - **REAL FEATURE ADDED: optional paid OpenAI fallback for llm_client.generate()
   (2026-09-30, last-minute pre-submission ask -- "we only have that one
   Gemini API, can we put a second one").** User explicitly chose Gemini

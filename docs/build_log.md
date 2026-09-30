@@ -4,6 +4,39 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Split the trigger button and the "Listening" status pill back into
+  two separate elements, plus mobile layout (2026-09-30, "Enable
+  HeyGreen gets hidden with Listening button. Listening button should be
+  there").** Root cause: the entry below conflated two unrelated
+  concepts into one shared `<button>`/one shared label -- a passive
+  "background wakeword detection is on" status readout, and a standing
+  "trigger a conversation right now" button -- so a farmer could only
+  ever see ONE of "Listening" or "Enable HeyGreen" at a time, never both,
+  even though nothing about one should hide the other. Split back into
+  `#wake-indicator` (a `<span>` again, not a button -- passive, hidden
+  unless background listening is actually on, unchanged from this
+  project's original design) and a new `#wake-trigger-btn` ("Enable
+  HeyGreen", always visible, does the manual trigger). Also, per "in
+  desktop, we can have the Enable HeyGreen button a bit towards the
+  middle": added a `.panel-head-center` flex slot between
+  `.panel-head-left` (the shrinkable title) and `.panel-head-right`
+  (clear-chat + status pill) -- ordinary flex flow with `justify-content:
+  space-between` naturally lands it roughly middle-ish without needing
+  exact-center math that would fight the title's variable width.
+  And "need to do something for mobile version as well": at the 900px
+  breakpoint, three panel-head groups don't fit one row at phone width
+  the way they do on desktop -- shrank the trigger button to icon-only
+  (label kept in the DOM for `aria-label`/title, just visually hidden)
+  and the status pill to a smaller pill, so all three groups still fit
+  without wrapping.
+  **Verified:** `node --check` passed; Playwright screenshots confirm
+  "Enable HeyGreen" sits between the title and the right-side icons on a
+  1200px desktop viewport, and renders icon-only (with the status pill
+  and clear button) on a simulated iPhone viewport without crowding;
+  functional check confirms clicking the trigger button sets
+  `voice.streaming = true` while `#wake-indicator` (the separate status
+  pill) correctly stays `hidden` throughout, since background listening
+  was never started -- the two are genuinely independent now.
 - **Corrected the manual wake button's semantics: a direct trigger, not a
   background-listening toggle (2026-09-30, immediate follow-up to the
   entry below -- "that button is not for wakeword listening, it is for

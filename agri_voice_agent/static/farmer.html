@@ -628,6 +628,13 @@
   .clear-chat-btn:hover { border-color: var(--danger); color: var(--danger); }
   .clear-chat-btn:disabled { opacity: .4; pointer-events: none; }
 
+  /* Passive status readout only -- "Listening" while background wakeword
+     detection is on (started from the one-time enable-voice modal),
+     hidden the rest of the time. NOT the same thing as
+     .wake-trigger-btn below (a real bug this session: the two got
+     conflated into one shared element/label at first, so a farmer could
+     only ever see ONE of "Listening" or "Enable HeyGreen", never both --
+     they're unrelated concepts and both need to be visible together). */
   .wake-toggle {
     display: inline-flex;
     align-items: center;
@@ -640,16 +647,7 @@
     font-size: 12.5px;
     font-weight: 700;
     white-space: nowrap;
-    /* REAL FEATURE ADDED (2026-09-30, user asked for a manual way to turn
-       the wakeword on/off): this was a passive read-only <span>, now a
-       real <button> (see its markup) -- reset the default button chrome
-       so it still reads as the same pill, not a browser-styled button. */
-    border: none;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
   }
-  .wake-toggle:hover { background: var(--line-2); }
-  .wake-toggle.active:hover { background: var(--accent-soft); filter: brightness(0.95); }
   .wake-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); position: relative; }
   .wake-toggle.active { background: var(--accent-soft); color: var(--accent); }
   .wake-toggle.active .wake-dot { background: var(--accent); }
@@ -662,6 +660,36 @@
     opacity: 0;
     animation: ping 2s ease-out infinite;
   }
+
+  /* REAL FEATURE ADDED (2026-09-30, user asked for a manual way to
+     trigger the wakeword -- a standing button, not a status readout).
+     Sits in .panel-head-center: flex order naturally puts it between the
+     (shrinkable) title on the left and the fixed-width icons on the
+     right, landing roughly middle-ish per the user's "a bit towards the
+     middle" ask, without needing exact-center math that would fight the
+     title's variable width. */
+  .panel-head-center { display: flex; align-items: center; flex-shrink: 0; }
+  .wake-trigger-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px 7px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-family: var(--font-ui);
+    font-size: 12.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s ease, filter 0.15s ease;
+  }
+  .wake-trigger-btn .ic { width: 15px; height: 15px; }
+  .wake-trigger-btn:hover { filter: brightness(0.96); }
+  .wake-trigger-btn.active { background: var(--accent); color: var(--accent-ink); }
+  .wake-trigger-btn.active .ic { animation: wake-trigger-pulse 1s ease-in-out infinite; }
+  @keyframes wake-trigger-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   @keyframes ping { 0% { transform: scale(0.5); opacity: 0.7; } 100% { transform: scale(1.6); opacity: 0; } }
 
   .voice-status-row {
@@ -1289,6 +1317,15 @@
     .panel-head { padding: 12px 14px; }
     .panel-head-icon { width: 30px; height: 30px; border-radius: 9px; }
     .panel-sub { display: none; }
+    /* REAL FEATURE ADDED (2026-09-30, "need to do something for mobile
+       version as well" -- three panel-head groups (title, the trigger
+       button, clear+status) don't fit one row at phone width the way
+       they do on desktop). Icon-only trigger button (label kept for
+       aria/title, just visually hidden) and a smaller status pill so all
+       three groups still fit without wrapping or crowding the title. */
+    .wake-trigger-btn { padding: 7px; gap: 0; }
+    .wake-trigger-label { display: none; }
+    .wake-toggle { padding: 5px 9px 5px 8px; font-size: 11.5px; gap: 6px; }
     .voice-status-row { padding: 8px 14px; }
     .convo-log { padding: 16px 14px 12px; gap: 12px; }
     .msg-group, .bubble { max-width: 88%; }
@@ -1457,13 +1494,19 @@
             <div class="panel-sub" id="panel-sub">Weather, crop and plant health in one place</div>
           </div>
         </div>
+        <div class="panel-head-center">
+          <button type="button" class="wake-trigger-btn" id="wake-trigger-btn" aria-label="Trigger Hey Green, same as saying it out loud" title="Trigger Hey Green, same as saying it out loud">
+            <svg class="ic"><use href="#i-mic"/></svg>
+            <span class="wake-trigger-label">Enable HeyGreen</span>
+          </button>
+        </div>
         <div class="panel-head-right">
+          <span class="wake-toggle" id="wake-indicator" hidden>
+            <span class="wake-dot" id="wake-dot"></span>
+            <span id="wake-indicator-label">Listening</span>
+          </span>
           <button type="button" class="clear-chat-btn" id="clear-chat-btn" title="Clear this conversation" aria-label="Clear this conversation">
             <svg class="ic"><use href="#i-trash"/></svg>
-          </button>
-          <button type="button" class="wake-toggle" id="wake-indicator" aria-label="Trigger Hey Green, same as saying it out loud" title="Trigger Hey Green, same as saying it out loud">
-            <span class="wake-dot" id="wake-dot"></span>
-            <span id="wake-indicator-label">Enable HeyGreen</span>
           </button>
         </div>
       </div>
@@ -1647,6 +1690,7 @@ const els = {
   clearChatBtn: document.getElementById("clear-chat-btn"),
   wakeIndicator: document.getElementById("wake-indicator"),
   wakeIndicatorLabel: document.getElementById("wake-indicator-label"),
+  wakeTriggerBtn: document.getElementById("wake-trigger-btn"),
   voiceStatusRow: document.getElementById("voice-status-row"),
   voiceStatusIcon: document.getElementById("voice-status-icon"),
   voiceStatusText: document.getElementById("voice-status-text"),
@@ -3420,14 +3464,8 @@ async function _startWakewordListeningInner() {
 
 function stopWakewordListening() {
   voice.wakewordListening = false;
+  els.wakeIndicator.hidden = true;
   els.wakeIndicator.classList.remove("active");
-  // REAL BUG FOUND AND FIXED (2026-09-30, caught while wiring up the new
-  // manual toggle button below): this reset the label back to
-  // "Listening" even though listening had just stopped -- harmless
-  // before, since the pill was hidden whenever not listening, but now
-  // that it's an always-visible button, that label would falsely
-  // claim to still be listening right after turning it off.
-  els.wakeIndicatorLabel.textContent = "Enable HeyGreen";
   if (voice._wakewordProcessor) {
     voice._wakewordProcessor.removeEventListener("audioprocess", voice._wakewordHandler);
     voice._wakewordProcessor.disconnect();
@@ -3592,19 +3630,25 @@ els.enableVoiceSkipBtn.addEventListener("click", hideEnableVoiceModal);
 // toggle, it's a direct TRIGGER: pressing it should do exactly what a
 // real "Hey Green" detection does, useful for a demo/recording where
 // saying the wakeword out loud into a mic that may or may not reliably
-// hear it is riskier than a button that does the identical thing).
+// hear it is riskier than a button that does the identical thing). A
+// SEPARATE element from els.wakeIndicator (the passive "Listening"
+// status pill for background detection, restored to its original
+// behavior) -- the two got conflated into one element/one label at
+// first, which visually meant a farmer could only ever see "Listening"
+// OR "Enable HeyGreen", never both, even though they're unrelated
+// concepts (one is a status readout, the other a standing trigger
+// button that's useful regardless of that status).
 // Deliberately does NOT touch voice.wakewordListening/startWakewordListening
 // at all -- runWakewordConversation() (the actual "wakeword just fired"
 // logic, shared with the real on-device detection) doesn't need
-// background listening to be running, and this button doesn't start or
-// stop that separate mode. Guarded on voice.streaming so a second click
-// mid-conversation doesn't start an overlapping one.
-els.wakeIndicator.addEventListener("click", () => {
+// background listening to be running. Guarded on voice.streaming so a
+// second click mid-conversation doesn't start an overlapping one.
+els.wakeTriggerBtn.addEventListener("click", () => {
   if (voice.streaming) return;
   unlockAudioForSpeech();
-  els.wakeIndicator.classList.add("active");
+  els.wakeTriggerBtn.classList.add("active");
   runWakewordConversation(wakewordLabel("field")).finally(() => {
-    els.wakeIndicator.classList.remove("active");
+    els.wakeTriggerBtn.classList.remove("active");
   });
 });
 

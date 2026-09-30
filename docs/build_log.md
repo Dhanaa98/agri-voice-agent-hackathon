@@ -4,6 +4,42 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **Corrected the manual wake button's semantics: a direct trigger, not a
+  background-listening toggle (2026-09-30, immediate follow-up to the
+  entry below -- "that button is not for wakeword listening, it is for
+  triggering the wakeword").** The button (renamed "Enable HeyGreen")
+  previously called `startWakewordListening()`/`stopWakewordListening()`
+  -- the SAME persistent background-detection mode the one-time modal
+  starts, just manually toggled. What the user actually wanted: pressing
+  it does exactly what a real on-device "Hey Green" detection does
+  (greeting, then a multi-turn conversation over the AssemblyAI voice
+  socket), useful for a demo/recording where saying the wakeword out loud
+  into a mic that may or may not reliably hear it is riskier than a
+  button that does the identical thing.
+  Extracted the actual "a wakeword just fired" logic out of the real
+  on-device detection's `onFrame` handler into a standalone
+  `runWakewordConversation(label)`, called by BOTH the real detection and
+  the button -- there is no code-level difference between a real
+  detection and a manual trigger, so a judge watching a demo can't tell
+  them apart either. Rewritten to not depend on `voice.wakewordListening`
+  for its own follow-up-turn loop (the original code's `while
+  (voice.wakewordListening)` would have exited immediately for a manual
+  trigger fired while background listening was off) -- uses its own loop
+  condition instead, so multi-turn follow-ups work whether or not
+  background detection happens to be running. `wakewordLabel()` moved to
+  module scope (was local to the detection function) so the button can
+  use the same `"field" -> "Hey Green"` mapping. The button no longer
+  touches `startWakewordListening()`/`stopWakewordListening()` at all;
+  guarded on `voice.streaming` instead so a second click mid-conversation
+  doesn't start an overlapping one. Renamed the shared audio-unlock
+  helper from `unlockAudioAndStartWakeword()` to `unlockAudioForSpeech()`
+  now that it's called before two DIFFERENT things (the modal's real
+  `startWakewordListening()`, and the button's `runWakewordConversation()`)
+  rather than baking "and start wakeword" into its name.
+  **Verified:** `node --check` passed; Playwright confirmed a click sets
+  `voice.streaming = true` (conversation actually starts) while
+  `voice.wakewordListening` correctly stays `false` (background detection
+  untouched), with zero console errors.
 - **REAL FEATURE ADDED: manual wake-toggle button in the panel header
   (2026-09-30, user asked for a way to activate the wakeword manually if
   needed).** The header pill (`#wake-indicator`) was previously a passive

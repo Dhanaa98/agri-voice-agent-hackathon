@@ -1461,9 +1461,9 @@
           <button type="button" class="clear-chat-btn" id="clear-chat-btn" title="Clear this conversation" aria-label="Clear this conversation">
             <svg class="ic"><use href="#i-trash"/></svg>
           </button>
-          <button type="button" class="wake-toggle" id="wake-indicator" aria-label="Turn Hey Green listening on or off" title="Turn Hey Green listening on or off">
+          <button type="button" class="wake-toggle" id="wake-indicator" aria-label="Trigger Hey Green, same as saying it out loud" title="Trigger Hey Green, same as saying it out loud">
             <span class="wake-dot" id="wake-dot"></span>
-            <span id="wake-indicator-label">Enable voice</span>
+            <span id="wake-indicator-label">Enable HeyGreen</span>
           </button>
         </div>
       </div>
@@ -2277,6 +2277,17 @@ const WAKEWORD_GREETING = "Hey, I'm the farm assistant. How can I help you today
 // while a farmer was still mid-thought/distracted for a moment.
 const FOLLOWUP_WINDOW_MS = 60_000;
 const CONVERSATION_END_TEXT = "It seems you are no longer there. Ask me anything when you need.";
+
+// Just "field" -> "Hey Green" (down from also mapping "plant" -> "Hey
+// Doc" as of 2026-09-28, one wakeword covering all three domains instead
+// of two separate ones) -- kept as a name->phrase lookup rather than a
+// hardcoded string since loadWakewordModels() is still genuinely
+// multi-classifier-capable, so any other .onnx name dropped into the
+// models folder still gets a sensible (if unlabeled) fallback here.
+// Module-level (not local to _startWakewordListeningInner()) since the
+// manual "Enable HeyGreen" trigger button uses it too -- see
+// runWakewordConversation().
+const wakewordLabel = (n) => (n === "field" ? "Hey Green" : n);
 
 const voice = {
   audioContext: null,
@@ -3246,6 +3257,64 @@ async function startWakewordListening() {
   }
 }
 
+// REAL FEATURE ADDED (2026-09-30, user clarified: the manual button
+// isn't for toggling background listening, it's for TRIGGERING the
+// wakeword directly -- e.g. for a demo/recording where saying "Hey
+// Green" out loud into a mic that may or may not be reliably heard is
+// riskier than just pressing a button that does the exact same thing).
+// This is the actual "a wakeword just fired" conversation -- greeting,
+// then a loop of turns over the AssemblyAI voice socket -- factored out
+// of the real on-device detection's onFrame handler below so BOTH that
+// real detection and els.wakeIndicator's manual trigger call the exact
+// same code path; a farmer (or a judge watching a demo) can't tell the
+// difference between a real detection and a manual trigger because
+// there isn't one.
+//
+// Deliberately does NOT depend on voice.wakewordListening for its own
+// follow-up loop (unlike the code this replaced) -- a manual trigger
+// works whether or not background wakeword detection happens to be
+// running at all, and still supports the same multi-turn follow-up
+// window a real detection gets.
+async function runWakewordConversation(label) {
+  // The greeting is genuinely playing right now (gate = its promise,
+  // still pending) while the next socket connects in the background, but
+  // this gets its own distinct animated-line treatment rather than
+  // reusing the "speaking" pulse -- see showWakeDetected().
+  showWakeDetected(label);
+  let gate = speakAndWait(WAKEWORD_GREETING);
+  let firstTurn = true;
+  // One wakeword = one conversation. Each turn opens its socket
+  // immediately (so the multi-second AssemblyAI handshake overlaps
+  // whatever the assistant is saying) but only starts the mic once that
+  // speech has finished -- first the greeting, then each reply. Ends
+  // when a turn gets no question within FOLLOWUP_WINDOW_MS -- every exit
+  // path below breaks explicitly, so this just needs to loop until one does.
+  while (true) {
+    const outcome = await streamPcmToVoiceSocket(
+      (send) => {
+        let stopper = null;
+        captureMicPcm(send).then((stop) => { stopper = stop; });
+        return () => { if (stopper) stopper(); };
+      },
+      () => setVoiceStatus("listening", firstTurn ? `"${label}" — go ahead…` : "Listening — ask a follow-up…"),
+      { gate, idleTimeoutMs: FOLLOWUP_WINDOW_MS }
+    );
+    firstTurn = false;
+    if (outcome.endConversation) {
+      await outcome.speech;
+      break;
+    }
+    if (!outcome.gotResult) {
+      if (outcome.timedOut) {
+        hideVoiceStatus();
+        await speakAndWait(CONVERSATION_END_TEXT);
+      }
+      break;
+    }
+    gate = outcome.speech;
+  }
+}
+
 async function _startWakewordListeningInner() {
   // REAL BUG FOUND AND FIXED (2026-09-27, reported live: "delay in
   // accepting microphone permissions in mobile view"): this used to load
@@ -3283,13 +3352,6 @@ async function _startWakewordListeningInner() {
   els.wakeIndicator.hidden = false;
   els.wakeIndicator.classList.add("active");
   els.wakeIndicatorLabel.textContent = "Listening";
-  // Just "field" -> "Hey Green" now (down from also mapping "plant" ->
-  // "Hey Doc" as of 2026-09-28, one wakeword covering all three domains
-  // instead of two separate ones) -- kept as a name->phrase lookup rather
-  // than a hardcoded string since loadWakewordModels() is still genuinely
-  // multi-classifier-capable, so any other .onnx name dropped into the
-  // models folder still gets a sensible (if unlabeled) fallback here.
-  const wakewordLabel = (n) => (n === "field" ? "Hey Green" : n);
   // The idle "listening" state itself isn't shown in the voice-status row
   // -- the wake-indicator pill in the panel header already says "Listening"
   // compactly. The row is reserved for active feedback (connecting/go
@@ -3335,43 +3397,8 @@ async function _startWakewordListeningInner() {
       }
 
       if (detected) {
-        // One wakeword = one conversation. Each turn opens its socket
-        // immediately (so the multi-second AssemblyAI handshake overlaps
-        // whatever the assistant is saying) but only starts the mic once
-        // that speech has finished -- first the greeting, then each reply.
-        // Ends when a turn gets no question within FOLLOWUP_WINDOW_MS.
         const label = wakewordLabel(detected.name);
-        // The greeting is genuinely playing right now (gate = its promise,
-        // still pending) while the next socket connects in the background,
-        // but this gets its own distinct animated-line treatment rather
-        // than reusing the "speaking" pulse -- see showWakeDetected().
-        showWakeDetected(label);
-        let gate = speakAndWait(WAKEWORD_GREETING);
-        let firstTurn = true;
-        while (voice.wakewordListening) {
-          const outcome = await streamPcmToVoiceSocket(
-            (send) => {
-              let stopper = null;
-              captureMicPcm(send).then((stop) => { stopper = stop; });
-              return () => { if (stopper) stopper(); };
-            },
-            () => setVoiceStatus("listening", firstTurn ? `"${label}" — go ahead…` : "Listening — ask a follow-up…"),
-            { gate, idleTimeoutMs: FOLLOWUP_WINDOW_MS }
-          );
-          firstTurn = false;
-          if (outcome.endConversation) {
-            await outcome.speech;
-            break;
-          }
-          if (!outcome.gotResult) {
-            if (outcome.timedOut) {
-              hideVoiceStatus();
-              await speakAndWait(CONVERSATION_END_TEXT);
-            }
-            break;
-          }
-          gate = outcome.speech;
-        }
+        await runWakewordConversation(label);
         // Reset feature buffers so stale audio from the conversation
         // doesn't linger into the next wakeword detection attempt.
         for (const name of Object.keys(featureStates)) {
@@ -3398,9 +3425,9 @@ function stopWakewordListening() {
   // manual toggle button below): this reset the label back to
   // "Listening" even though listening had just stopped -- harmless
   // before, since the pill was hidden whenever not listening, but now
-  // that it's an always-visible toggle button, that label would falsely
+  // that it's an always-visible button, that label would falsely
   // claim to still be listening right after turning it off.
-  els.wakeIndicatorLabel.textContent = "Enable voice";
+  els.wakeIndicatorLabel.textContent = "Enable HeyGreen";
   if (voice._wakewordProcessor) {
     voice._wakewordProcessor.removeEventListener("audioprocess", voice._wakewordHandler);
     voice._wakewordProcessor.disconnect();
@@ -3500,13 +3527,15 @@ function hideEnableVoiceModal() {
   els.enableVoiceModal.hidden = true;
 }
 
-// Shared by the modal's "Enable voice" button and the manual wake-toggle
-// button in the panel header (see els.wakeIndicator's click handler
-// below) -- both are real user-gesture click handlers, so both need the
-// same audio-unlock priming before starting to listen, not just the
-// modal (a farmer who skipped the modal and later clicks the header
-// toggle instead deserves working spoken replies too).
-function unlockAudioAndStartWakeword() {
+// Shared by the modal's "Enable voice" button and the panel header's
+// "Enable HeyGreen" trigger button -- both are real user-gesture click
+// handlers, so both need this same audio-unlock priming before any
+// speech plays, not just the modal (a farmer who skipped the modal and
+// later uses the header button instead deserves working spoken replies
+// too). Factored out from what used to be one combined function so it
+// can run before either startWakewordListening() (the modal) or
+// runWakewordConversation() (the header button) -- see each call site.
+function unlockAudioForSpeech() {
   // REAL BUG FOUND AND FIXED (2026-09-27, reported live: "didn't hear any
   // response it said"): speechSynthesis.speak() reliably produces audio on
   // mobile Safari (and some other mobile browsers) only when the FIRST
@@ -3546,32 +3575,37 @@ function unlockAudioAndStartWakeword() {
     );
     audioUnlock.play().catch(() => {});
   } catch (e) { /* best-effort -- if this fails, later cloud playback would too */ }
-  startWakewordListening().catch((err) => {
-    addMessage("error", null, "Couldn't start voice listening. Check your microphone permission in the browser's site settings.");
-    stopWakewordListening();
-  });
 }
 
 els.enableVoiceBtn.addEventListener("click", () => {
   hideEnableVoiceModal();
-  unlockAudioAndStartWakeword();
+  unlockAudioForSpeech();
+  startWakewordListening().catch((err) => {
+    addMessage("error", null, "Couldn't start voice listening. Check your microphone permission in the browser's site settings.");
+    stopWakewordListening();
+  });
 });
 els.enableVoiceSkipBtn.addEventListener("click", hideEnableVoiceModal);
 
-// REAL FEATURE ADDED (2026-09-30, user asked for a way to turn the
-// wakeword on manually -- e.g. after skipping the modal, or if it never
-// started for some other reason). The header pill (previously a passive
-// "currently listening" readout, hidden until listening actually began)
-// is now always visible and clickable: starts listening if it isn't
-// already, stops it if it is. See unlockAudioAndStartWakeword() above
-// for why this needs the same audio-unlock priming the modal's button
-// does -- this is just as much a real user gesture as that one.
+// REAL FEATURE ADDED (2026-09-30, user asked for a manual way to activate
+// the wakeword -- then clarified this button isn't a background-listening
+// toggle, it's a direct TRIGGER: pressing it should do exactly what a
+// real "Hey Green" detection does, useful for a demo/recording where
+// saying the wakeword out loud into a mic that may or may not reliably
+// hear it is riskier than a button that does the identical thing).
+// Deliberately does NOT touch voice.wakewordListening/startWakewordListening
+// at all -- runWakewordConversation() (the actual "wakeword just fired"
+// logic, shared with the real on-device detection) doesn't need
+// background listening to be running, and this button doesn't start or
+// stop that separate mode. Guarded on voice.streaming so a second click
+// mid-conversation doesn't start an overlapping one.
 els.wakeIndicator.addEventListener("click", () => {
-  if (voice.wakewordListening) {
-    stopWakewordListening();
-  } else {
-    unlockAudioAndStartWakeword();
-  }
+  if (voice.streaming) return;
+  unlockAudioForSpeech();
+  els.wakeIndicator.classList.add("active");
+  runWakewordConversation(wakewordLabel("field")).finally(() => {
+    els.wakeIndicator.classList.remove("active");
+  });
 });
 
 els.addFarmToggle.addEventListener("click", () => {

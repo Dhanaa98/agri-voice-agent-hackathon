@@ -13,3 +13,9 @@ agri_voice_agent/synthetic_negative_raw/
 server_stdout.log
 server_stderr.log
 agri_voice_agent/hey green/
+
+# Video narration production aids (not part of the app) -- personal
+# voiceover generation, not meant for the public repo.
+tools/narration_clips/
+tools/generate_narration_clips.py
+tools/HeyGreen_video_narration.txt

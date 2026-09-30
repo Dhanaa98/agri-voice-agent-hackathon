@@ -1969,9 +1969,8 @@ Running log of build progress for this project at
   `.env` (user must have added it) -- Weather is live-capable now, though
   this wasn't specifically re-tested against the real API in this session
   since the task was the farmer dashboard, not a Weather live-test pass.
-- **Pathogen Ledger artifact published** (browsable UI over the live
-  `plant_data.py` dataset): https://claude.ai/artifact/Vco1gE3bRop8jdGKCS7ELS
-  -- crop rail + disease cards + global search across name/pathogen/symptom
+- **Pathogen Ledger reference UI published** (browsable UI over the live
+  `plant_data.py` dataset) -- crop rail + disease cards + global search across name/pathogen/symptom
   text, region-tagged control entries visually distinguished from universal
   ones, weather-trigger thresholds shown per disease. Data is exported from
   `plant_data.py` via a one-off Python script and embedded inline as JSON in

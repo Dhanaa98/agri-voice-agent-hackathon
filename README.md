@@ -234,7 +234,6 @@ plant_pathology_reference.md  # full disease catalog, organized by crop (see its
 
 docs/
   build_log.md         # running step-by-step build progress log
-  artifacts.md          # published claude.ai artifact links + republish steps
   project_overview.md    # top-level project summary
 
 agri_voice_agent/

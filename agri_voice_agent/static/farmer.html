@@ -3104,9 +3104,9 @@ function makeWakewordFeatureState() {
 
 // Runs melspectrogram.onnx on a window of raw int16 samples, applies
 // openWakeWord's fixed `x/10 + 2` transform (this exact constant is from
-// the reference implementation -- it's not a normalization Claude
-// invented, it's what makes the ONNX melspec model's output numerically
-// match the original TensorFlow model it was converted from).
+// the reference implementation -- not an invented normalization, it's
+// what makes the ONNX melspec model's output numerically match the
+// original TensorFlow model it was converted from).
 async function runMelspectrogram(session, int16Window) {
   const floatSamples = Float32Array.from(int16Window);
   const tensor = new ort.Tensor("float32", floatSamples, [1, floatSamples.length]);

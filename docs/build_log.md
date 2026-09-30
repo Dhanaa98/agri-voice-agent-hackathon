@@ -4,6 +4,40 @@ Running log of build progress for this project at
 `D:\Dhananjaya\Voice project 2`. Update this after each meaningful build session.
 
 ## Setup decisions made
+- **REAL FEATURE ADDED: optional paid OpenAI fallback for llm_client.generate()
+  (2026-09-30, last-minute pre-submission ask -- "we only have that one
+  Gemini API, can we put a second one").** User explicitly chose Gemini
+  stays primary (free), OpenAI only used as a fallback when a Gemini call
+  itself fails (outage/quota/transient error) -- normal operation costs
+  nothing extra, matching this project's standing free-tier-first budget
+  constraint. `_generate_gemini()` (the existing Gemini logic, unchanged,
+  just renamed/extracted) is tried first; on `RuntimeError`, if
+  `OPENAI_API_KEY` is set, `_generate_openai()` (a new small function --
+  raw REST via `requests` to `/v1/chat/completions`, `gpt-4o-mini`, not
+  the `openai` SDK -- no new dependency to risk failing to install this
+  close to a deadline) is tried; if OpenAI also fails or isn't
+  configured, the ORIGINAL Gemini `RuntimeError` is re-raised (not
+  OpenAI's) so every existing call site's fallback-to-deterministic-text
+  behavior, log messages, etc. all still see the same "Gemini request
+  failed: ..." shape they already handle -- zero changes needed in
+  crop.py/plant.py/weather.py or anywhere else that calls
+  `llm_client.generate()`. Added `OPENAI_API_KEY` to `config.py`,
+  `.env.example`, and `render.yaml` (`sync: false`, left unset by
+  default so Render deploys stay free-tier-only unless explicitly
+  configured).
+  **Verified:** `python -m py_compile` passed; four mocked scenarios
+  (Gemini succeeds -> OpenAI never called; Gemini fails + no OpenAI key
+  -> re-raises Gemini's error; Gemini fails + OpenAI succeeds -> returns
+  OpenAI's text; Gemini fails + OpenAI also fails -> re-raises the
+  ORIGINAL Gemini error, not OpenAI's) all passed exactly as designed;
+  then re-ran this project's existing manual integration tests
+  (`test_cross_domain_integration`, `test_weather_manual`,
+  `test_crop_manual`) against the REAL Gemini API with no OpenAI key set
+  to confirm the refactor didn't disturb the primary path at all -- all
+  three passed unchanged. Did not test an actual OpenAI key end-to-end
+  (none available in this environment) -- the mocked test above covers
+  the wiring/control-flow, but a real key should be smoke-tested before
+  relying on the fallback actually firing correctly against OpenAI's live API.
 - **REAL BUG FOUND AND FIXED: iOS push-to-talk dropped a normal short
   press-speak-release gesture entirely (2026-09-30).** User asked for
   exactly the behavior `startPushToTalkAssembly()` was already supposed

@@ -8,6 +8,11 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false
+      # Optional paid fallback -- only called if a Gemini request itself
+      # fails. Leave unset on Render to stay 100% free-tier; see
+      # llm_client.py and .env.example.
+      - key: OPENAI_API_KEY
+        sync: false
       - key: OPENWEATHER_API_KEY
         sync: false
       - key: ASSEMBLYAI_API_KEY

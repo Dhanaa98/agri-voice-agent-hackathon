@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 
 import httpx
+import requests
 from google import genai
 from google.genai import errors, types
 
@@ -18,6 +19,8 @@ from . import config
 _client: genai.Client | None = None
 
 REQUEST_TIMEOUT_MS = 20_000
+OPENAI_REQUEST_TIMEOUT_S = 20
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 # Shared default tone across every domain agent's LLM call, so "natural"
 # doesn't mean re-writing the same tone instructions in every prompt string
@@ -54,15 +57,44 @@ def _get_client() -> genai.Client:
     return _client
 
 
-def generate(
-    prompt: str,
-    system_instruction: str | None = DEFAULT_SYSTEM_INSTRUCTION,
-    model: str = "gemini-flash-lite-latest",
-    json_mode: bool = False,
+def _generate_openai(
+    prompt: str, system_instruction: str | None, json_mode: bool, model: str = "gpt-4o-mini"
 ) -> str:
-    """Single-turn generation. Returns plain text.
+    """Paid fallback, only ever reached when Gemini itself has already
+    failed (see generate()) -- gpt-4o-mini specifically: cheap and fast
+    enough to still feel conversational, the same latency-first reasoning
+    that picked gemini-flash-lite-latest as the primary model above. Raw
+    REST via `requests` (already a hard dependency, unlike the `openai`
+    SDK) rather than a new package -- one call, no client object needed,
+    and nothing new to risk failing to install on a deploy this close to
+    a deadline.
+    """
+    if not config.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
+    messages = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    messages.append({"role": "user", "content": prompt})
+    body = {"model": model, "messages": messages}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    resp = requests.post(
+        OPENAI_CHAT_URL,
+        headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+        json=body,
+        timeout=OPENAI_REQUEST_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
-    Uses the "-latest" alias rather than a pinned version (e.g.
+
+def _generate_gemini(
+    prompt: str,
+    system_instruction: str | None,
+    model: str,
+    json_mode: bool,
+) -> str:
+    """Uses the "-latest" alias rather than a pinned version (e.g.
     "gemini-2.0-flash", which Google has since retired -- confirmed via
     client.models.list() against a live key, not assumed) so this doesn't
     silently start failing again the next time Google rotates the
@@ -115,3 +147,31 @@ def generate(
         # chat bubble. Same fallback treatment as an API-level failure.
         raise RuntimeError(f"Gemini request failed: {exc}") from exc
     return response.text.strip()
+
+
+def generate(
+    prompt: str,
+    system_instruction: str | None = DEFAULT_SYSTEM_INSTRUCTION,
+    model: str = "gemini-flash-lite-latest",
+    json_mode: bool = False,
+) -> str:
+    """Single-turn generation. Returns plain text. Gemini (free tier) is
+    always tried first; OPENAI_API_KEY (optional, paid) is only ever used
+    as a fallback when Gemini itself fails (outage, quota, transient
+    error) -- normal operation never touches it, so this costs nothing
+    extra unless Gemini is actually down. If OpenAI isn't configured, or
+    also fails, this raises the ORIGINAL Gemini RuntimeError (not
+    OpenAI's), since every call site's fallback message ("Gemini request
+    failed: ...") is what callers/logs already expect -- swallowing that
+    in favor of a second error would just be confusing without adding
+    information.
+    """
+    try:
+        return _generate_gemini(prompt, system_instruction, model, json_mode)
+    except RuntimeError as gemini_exc:
+        if not config.OPENAI_API_KEY:
+            raise
+        try:
+            return _generate_openai(prompt, system_instruction, json_mode)
+        except Exception:  # noqa: BLE001 -- any OpenAI failure just falls back to the original Gemini error
+            raise gemini_exc from None

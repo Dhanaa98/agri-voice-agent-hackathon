@@ -12,6 +12,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 DEFAULT_LOCATION = os.getenv("DEFAULT_LOCATION", "Colombo,LK")
 
+# Optional paid fallback for llm_client.generate() -- Gemini (free tier)
+# stays primary; this is only ever called if a Gemini request fails
+# (quota/outage/transient error), so normal operation costs nothing extra.
+# Leaving this unset just means Gemini failures fall through to each
+# domain agent's own deterministic-text fallback, same as before this
+# existed. See llm_client.py's own comment on why gpt-4o-mini specifically.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
 # elevenlabs-tts branch only (not on master): cloud TTS for spoken replies,
 # instead of the browser's own free speechSynthesis -- see tts_client.py.
 # ELEVENLABS_VOICE_ID has no default on purpose: a wrong/guessed voice_id
